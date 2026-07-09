@@ -1,0 +1,40 @@
+{
+  "description": "适合新手学习的微信小程序文字放置修仙游戏",
+  "packOptions": {
+    "ignore": [],
+    "include": []
+  },
+  "setting": {
+    "es6": true,
+    "enhance": true,
+    "postcss": true,
+    "minified": true,
+    "urlCheck": false,
+    "compileWorklet": false,
+    "uglifyFileName": false,
+    "uploadWithSourceMap": true,
+    "packNpmManually": false,
+    "packNpmRelationList": [],
+    "minifyWXSS": true,
+    "minifyWXML": true,
+    "localPlugins": false,
+    "disableUseStrict": false,
+    "useCompilerPlugins": false,
+    "condition": false,
+    "swc": false,
+    "disableSWC": true,
+    "babelSetting": {
+      "ignore": [],
+      "disablePlugins": [],
+      "outputPath": ""
+    }
+  },
+  "compileType": "miniprogram",
+  "appid": "wxaf5fe8d7c047a5b0",
+  "projectname": "xiuxian-idle-game",
+  "miniprogramRoot": "./",
+  "simulatorPluginLibVersion": {},
+  "isGameTourist": false,
+  "editorSetting": {},
+  "libVersion": "3.16.2"
+}
