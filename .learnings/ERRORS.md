@@ -75,6 +75,25 @@ For this desktop test environment, start the temporary local server in the same 
 
 ---
 
+## [ERR-20260716-006] git_metadata_write_restricted
+
+**Logged**: 2026-07-16T00:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: delivery
+
+### Summary
+The restricted workspace could read the Git repository but could not create `.git/index.lock` for staging and committing.
+
+### Suggested Fix
+Run repository write operations with the approved elevated Git permission, while keeping file edits inside the workspace.
+
+### Resolution
+- **Resolved**: 2026-07-16T00:00:00+08:00
+- **Notes**: The commit and configured post-commit GitHub sync completed after approval.
+
+---
+
 ## [ERR-20260716-003] browser_screenshot_after_reload_timeout
 
 **Logged**: 2026-07-16T00:00:00+08:00
