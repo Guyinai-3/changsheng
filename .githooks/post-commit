@@ -1,0 +1,9 @@
+#!/bin/sh
+# 开发阶段：每次成功提交后，自动推送当前分支到 GitHub。
+# 网络或权限暂时不可用时，不影响本地提交；下次提交或手动执行 git push 会补同步。
+branch="$(git branch --show-current)"
+
+if [ -n "$branch" ]; then
+  # 放入后台，不让网络或登录窗口阻塞本地提交。
+  (git push origin "$branch" >/dev/null 2>&1 &)
+fi

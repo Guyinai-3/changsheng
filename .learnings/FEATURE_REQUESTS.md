@@ -1,5 +1,5 @@
 # Feature Requests
 
-Capabilities requested by the user.
+Requested capabilities tracked during development.
 
 ---

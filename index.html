@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#202922">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>问道长生</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% 10%, rgba(91, 122, 94, .35), transparent 38%),
+        linear-gradient(145deg, #111713, #273229);
+    }
+
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #game-shell {
+      width: min(100vw, 460px);
+      height: min(100dvh, 840px);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+      background: #f3efe4;
+      box-shadow: 0 18px 70px rgba(0, 0, 0, .48);
+    }
+
+    #web-toolbar {
+      height: calc(40px + env(safe-area-inset-top));
+      flex: 0 0 calc(40px + env(safe-area-inset-top));
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: calc(5px + env(safe-area-inset-top)) 10px 5px;
+      color: #e9e3d6;
+      background: #263229;
+      border-bottom: 1px solid rgba(255, 255, 255, .1);
+      user-select: none;
+    }
+
+    #web-toolbar .title {
+      margin-right: auto;
+      font-size: 13px;
+      letter-spacing: .08em;
+      opacity: .9;
+    }
+
+    #web-toolbar button,
+    .modal-actions button {
+      appearance: none;
+      border: 1px solid rgba(255, 255, 255, .2);
+      border-radius: 7px;
+      padding: 5px 10px;
+      color: #f7f3e9;
+      background: #526d5b;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    #web-toolbar button:hover,
+    .modal-actions button:hover { filter: brightness(1.12); }
+
+    #gameCanvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      flex: 1 1 auto;
+      min-height: 0;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    #modal-layer {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 22px;
+      background: rgba(10, 14, 11, .68);
+    }
+
+    #modal-layer.visible { display: flex; }
+
+    .modal-card {
+      width: min(92vw, 380px);
+      max-height: min(80vh, 620px);
+      overflow: auto;
+      padding: 20px;
+      color: #423d35;
+      background: #fffdf7;
+      border: 1px solid #d8cebb;
+      border-radius: 14px;
+      box-shadow: 0 20px 70px rgba(0, 0, 0, .42);
+    }
+
+    .modal-title {
+      margin: 0 0 14px;
+      color: #7b3e25;
+      text-align: center;
+      font-size: 19px;
+    }
+
+    .modal-content {
+      margin: 0;
+      color: #5d574d;
+      white-space: pre-wrap;
+      line-height: 1.65;
+      font-size: 14px;
+    }
+
+    #modal-input {
+      display: none;
+      width: 100%;
+      margin-top: 14px;
+      padding: 10px 12px;
+      color: #423d35;
+      background: #f8f4e9;
+      border: 1px solid #cfc4b1;
+      border-radius: 8px;
+      font: inherit;
+      outline: none;
+    }
+
+    #modal-input:focus { border-color: #8b4513; }
+
+    #modal-options {
+      display: none;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      margin-top: 16px;
+    }
+
+    #modal-options button {
+      padding: 10px 12px;
+      color: #f7f3e9;
+      background: #526d5b;
+      border: 0;
+      border-radius: 8px;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .modal-actions .cancel { background: #737a70; }
+    .modal-actions .confirm { background: #8b4513; }
+
+    #toast {
+      position: fixed;
+      left: 50%;
+      bottom: max(28px, env(safe-area-inset-bottom));
+      z-index: 1100;
+      max-width: min(86vw, 360px);
+      padding: 10px 16px;
+      color: #fff;
+      text-align: center;
+      background: rgba(31, 39, 33, .92);
+      border-radius: 9px;
+      opacity: 0;
+      pointer-events: none;
+      transform: translate(-50%, 10px);
+      transition: opacity .18s, transform .18s;
+    }
+
+    #toast.visible {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+
+    #save-file-input { display: none; }
+
+    @media (max-width: 600px) {
+      #game-shell {
+        width: 100vw;
+        height: 100dvh;
+        max-height: none;
+        box-shadow: none;
+      }
+      #web-toolbar .title { font-size: 12px; }
+      #web-toolbar button { padding: 5px 8px; font-size: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <main id="game-shell" aria-label="问道长生文字修仙游戏">
+    <nav id="web-toolbar" aria-label="浏览器存档工具">
+      <span class="title">本机存档</span>
+      <button id="save-help-button" type="button">说明</button>
+      <button id="export-save-button" type="button">导出</button>
+      <button id="import-save-button" type="button">导入</button>
+      <input id="save-file-input" type="file" accept="application/json,.json">
+    </nav>
+    <canvas id="gameCanvas"></canvas>
+  </main>
+
+  <div id="modal-layer" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <section class="modal-card">
+      <h2 id="modal-title" class="modal-title"></h2>
+      <p id="modal-content" class="modal-content"></p>
+      <input id="modal-input" type="text" autocomplete="off">
+      <div id="modal-options"></div>
+      <div class="modal-actions">
+        <button id="modal-cancel" class="cancel" type="button">取消</button>
+        <button id="modal-confirm" class="confirm" type="button">确定</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="platform.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
