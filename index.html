@@ -32,8 +32,8 @@
     }
 
     #game-shell {
-      width: min(100vw, 460px);
-      height: min(100dvh, 840px);
+      width: min(100vw, 600px);
+      height: min(100dvh, 900px);
       display: flex;
       flex-direction: column;
       overflow: hidden;
@@ -80,7 +80,7 @@
     #gameCanvas {
       display: block;
       width: 100%;
-      height: auto;
+      height: 100%;
       flex: 1 1 auto;
       min-height: 0;
       touch-action: none;
@@ -204,6 +204,12 @@
       }
       #web-toolbar .title { font-size: 12px; }
       #web-toolbar button { padding: 5px 8px; font-size: 12px; }
+    }
+
+    /* 桌面端保持居中的修仙卷轴，不把 Canvas 拉成整块宽屏面板。 */
+    @media (min-width: 1025px) {
+      #game-shell { border-radius: 16px; }
+      #web-toolbar { padding-left: 14px; padding-right: 14px; }
     }
   </style>
 </head>

@@ -17,6 +17,8 @@
   const memoryStorage = {}
   const lifecycle = { show: [], hide: [] }
   const touchListeners = { start: [], move: [], end: [] }
+  const wheelListeners = []
+  const resizeListeners = []
   const modalQueue = []
   let activeModal = null
   let toastTimer = null
@@ -108,6 +110,13 @@
 
   canvas.addEventListener('pointerup', finishPointer)
   canvas.addEventListener('pointercancel', finishPointer)
+  // 鼠标滚轮映射成统一事件，Canvas 页面可和手机手势共用滚动逻辑。
+  canvas.addEventListener('wheel', function (event) {
+    event.preventDefault()
+    wheelListeners.forEach(function (listener) {
+      listener({ deltaY: event.deltaY })
+    })
+  }, { passive: false })
 
   function showNextModal() {
     if (activeModal || !modalQueue.length) return
@@ -211,6 +220,9 @@
       return {
         windowWidth: size.width,
         windowHeight: size.height,
+        // 画布宽度会被最大容器限制；设备分类仍应使用真实浏览器窗口宽度。
+        viewportWidth: Math.round(window.innerWidth || size.width),
+        viewportHeight: Math.round(window.innerHeight || size.height),
         pixelRatio: Math.min(2, window.devicePixelRatio || 1),
         platform: /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) ? 'mobile-web' : 'desktop-web',
         safeArea: { top: 0, left: 0, right: size.width, bottom: size.height, width: size.width, height: size.height }
@@ -221,6 +233,8 @@
     onTouchStart: function (listener) { touchListeners.start.push(listener) },
     onTouchMove: function (listener) { touchListeners.move.push(listener) },
     onTouchEnd: function (listener) { touchListeners.end.push(listener) },
+    onWheel: function (listener) { wheelListeners.push(listener) },
+    onResize: function (listener) { resizeListeners.push(listener) },
     onShow: function (listener) { lifecycle.show.push(listener) },
     onHide: function (listener) { lifecycle.hide.push(listener) },
     showToast: function (options) { showToast(options && options.title) },
@@ -245,17 +259,15 @@
     }
   }
 
-  // game.js 在启动时计算一次画布比例。窗口宽度发生变化时安全重载，
-  // 存档会保留，因此旋转手机或调整PC窗口后不会出现点击坐标偏移。
+  // 窗口变化时交给 game.js 重新计算比例并绘制，不再重载页面。
   window.addEventListener('resize', function () {
     window.clearTimeout(resizeTimer)
     resizeTimer = window.setTimeout(function () {
       if (!reportedCanvasSize) return
       const nextSize = getCanvasSize()
-      const isMobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)
-      const widthChanged = Math.abs(nextSize.width - reportedCanvasSize.width) > 4
-      const desktopHeightChanged = !isMobile && Math.abs(nextSize.height - reportedCanvasSize.height) > 4
-      if (widthChanged || desktopHeightChanged) window.location.reload()
+      // 即使最大宽度让画布尺寸不变，浏览器窗口宽度也可能跨过手机/平板/桌面断点。
+      reportedCanvasSize = nextSize
+      resizeListeners.forEach(function (listener) { listener(nextSize) })
     }, 250)
   })
 

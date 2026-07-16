@@ -56,6 +56,25 @@ Treat no-match as a successful negative assertion when validating removed hard l
 
 ---
 
+## [ERR-20260716-007] browser_viewport_emulation_readonly
+
+**Logged**: 2026-07-16T00:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+The in-app browser validation surface exposes a read-only page DOM, so its viewport and inline styles cannot be modified to emulate a 390px mobile browser after opening a desktop tab.
+
+### Suggested Fix
+Use the real desktop viewport for visual smoke checks and verify mobile breakpoints from the responsive code path or a browser surface that supports viewport emulation.
+
+### Resolution
+- **Resolved**: 2026-07-16T00:00:00+08:00
+- **Notes**: Desktop layout and Canvas scrolling were verified visually; responsive resize handling was verified through syntax and implementation checks.
+
+---
+
 ## [ERR-20260716-005] external_static_server_not_reachable
 
 **Logged**: 2026-07-16T00:00:00+08:00
