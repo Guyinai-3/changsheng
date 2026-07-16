@@ -45,7 +45,8 @@ const gameAssets = {}
 // 每个大境界的后期突破都有成功率；突破失败会进入重伤状态。
 // 随着境界提升，修炼倍率、基础战力和突破需求都会明显提高。
 const REALMS = [
-  { name: '凡人', cost: 100, cultivateRate: 1.0, basePower: 10 },
+  // 新手阶段只需 10 点修为即可踏入炼气期。
+  { name: '凡人', cost: 10, cultivateRate: 1.0, basePower: 10 },
 
   { name: '炼气一层', cost: 300, cultivateRate: 1.2, basePower: 50 },
   { name: '炼气二层', cost: 800, cultivateRate: 1.4, basePower: 100 },
@@ -306,7 +307,7 @@ const RANDOM_EVENTS = [
 // 游戏的所有存档数据集中放在这里，方便新手查找和修改。
 const gameData = {
   cultivation: 0,
-  clickPower: 1,
+  clickPower: 10,
   autoPower: 0,
   skillLevel: 1,
   // 灵根和功法均为本世数据；skillLevel 保留用于旧存档兼容。
@@ -343,6 +344,8 @@ const gameData = {
   mansionLevel: 1,
   guardStoneProgress: 0,
   lastGuardRewardTime: Date.now(),
+  // 所有在线、后台与离线收益都从这一个时间点计算，避免浏览器限速漏算收益。
+  lastUpdateTime: Date.now(),
   // 所有地图 Boss 共用一个挑战冷却；首通状态用于区分首通和重复奖励。
   bossCooldownEndTime: 0,
   bossDefeated: {
@@ -462,6 +465,11 @@ let rebirthPrepareContentHeight = 0
 let rebirthPrepareViewportHeight = 0
 let isTouchingRebirthPrepareContent = false
 let rebirthPrepareTouchLastY = 0
+let rebirthPageScrollY = 0
+let rebirthPageContentHeight = 0
+let rebirthPageViewportHeight = 0
+let isTouchingRebirthPageContent = false
+let rebirthPageTouchLastY = 0
 let longPressTimer = null
 let touchStartButton = null
 let touchStartX = 0
@@ -583,9 +591,11 @@ platform.onShow(function () {
 })
 
 platform.onHide(function () {
+  calculateOfflineProgress(false)
   clearInterval(gameTimer)
-  // 退出前记录时间，下一次进入时从这里开始结算离线镇守收益。
-  gameData.lastGuardRewardTime = Date.now()
+  // 退出前记录时间，下一次进入时从这里开始按真实经过时间补算。
+  gameData.lastUpdateTime = Date.now()
+  gameData.lastGuardRewardTime = gameData.lastUpdateTime
   saveGame()
 })
 
@@ -613,6 +623,11 @@ platform.onTouchStart(function (event) {
   if (!activeStoryDialog && isInRebirthPrepareContentArea(x, y)) {
     isTouchingRebirthPrepareContent = true
     rebirthPrepareTouchLastY = y
+  }
+
+  if (!activeStoryDialog && isInRebirthPageContentArea(x, y)) {
+    isTouchingRebirthPageContent = true
+    rebirthPageTouchLastY = y
   }
 
   for (let i = 0; i < buttons.length; i++) {
@@ -661,38 +676,31 @@ platform.onTouchMove(function (event) {
     rebirthPrepareTouchLastY = y
     drawGame()
   }
+  if (isTouchingRebirthPageContent) {
+    rebirthPageScrollY -= y - rebirthPageTouchLastY
+    clampRebirthPageScroll()
+    rebirthPageTouchLastY = y
+    drawGame()
+  }
 })
 
 platform.onTouchEnd(function () {
   clearTimeout(longPressTimer)
   if (isTouchingLog) { isTouchingLog = false; clampAdventureLogScroll(); drawGame() }
   if (isTouchingRebirthPrepareContent) { isTouchingRebirthPrepareContent = false; clampRebirthPrepareScroll(); drawGame() }
+  if (isTouchingRebirthPageContent) { isTouchingRebirthPageContent = false; clampRebirthPageScroll(); drawGame() }
   if (touchStartButton && !touchMoved && !longPressTriggered) touchStartButton.onTap()
   touchStartButton = null; touchMoved = false; longPressTriggered = false
 })
 
-// 每秒执行自动修炼并刷新两个倒计时。
+// 定时器只刷新界面；收益按真实经过时间计算，浏览器后台限速也不会漏算。
 function startTimer() {
   clearInterval(gameTimer)
 
   gameTimer = setInterval(function () {
+    const progress = calculateOfflineProgress(false)
     const injuryRecovered = refreshInjuryStatus()
-    let needSave = injuryRecovered
-    if (gameData.autoPower > 0) {
-      // 自动修炼会受到受伤状态影响，手动修炼不走这里。
-      gameData.cultivation += getAutoCultivationGain(gameData.autoPower)
-      needSave = true
-    }
-    // 自我管理等同于每秒执行一次手动修炼，受伤时暂停且不触发十连击。
-    if (hasSpecialTalent('self_management') && gameData.injuryStatus === 'none') {
-      // 自我管理是模拟点击，并非玩家真实点击，因此不享受苦修之道的 10 倍效果。
-      let selfGain = getManualCultivationGain(gameData.clickPower, false)
-      if (Date.now() < gameData.pillBuffEndTime && hasSpecialTalent('pill_resonance')) {
-        selfGain = Math.max(1, Math.floor(selfGain * 1.5))
-      }
-      gameData.cultivation += selfGain
-      needSave = true
-    }
+    let needSave = injuryRecovered || progress.cultivationGain > 0 || progress.stoneGain > 0
     // 一念顿悟每 60 秒积累一次；准备好后暂停计时，等待玩家主动使用。
     if (hasSpecialTalent('sudden_enlightenment')) {
       if (!gameData.nextEnlightenmentTime) {
@@ -702,16 +710,6 @@ function startTimer() {
         needSave = true
       }
     }
-
-    // 镇守洞府每秒累计小数收益，满 1 灵石后再发放整数灵石。
-    gameData.guardStoneProgress += getGuardStonePerSecond()
-    if (gameData.guardStoneProgress >= 1) {
-      const stoneGain = Math.floor(gameData.guardStoneProgress)
-      gameData.spiritStone += stoneGain
-      gameData.guardStoneProgress -= stoneGain
-    }
-    gameData.lastGuardRewardTime = Date.now()
-    needSave = true
 
     if (checkSectTechniqueReward()) needSave = true
 
@@ -868,11 +866,13 @@ function drawGame() {
     drawRebirthPreparePage()
   } else if (currentPage === 'special_talent_choice') {
     drawSpecialTalentChoicePage()
+  } else if (currentPage === 'technique') {
+    drawTechniquePage()
   } else {
     drawMapPage()
   }
   // 轮回准备和候选天赋页是连续流程，不能从底部导航意外跳走。
-  if (currentPage !== 'rebirth_prepare' && currentPage !== 'special_talent_choice') drawPageNavigation()
+  if (currentPage !== 'rebirth_prepare' && currentPage !== 'special_talent_choice' && currentPage !== 'technique') drawPageNavigation()
   drawStoryDialog()
 
   context.restore()
@@ -899,7 +899,9 @@ function drawStatusCard() {
   drawLabelValue('当前修为', formatNumber(gameData.cultivation), 116)
   drawLabelValue('灵石 / 聚气丹', gameData.spiritStone + ' / ' + gameData.pillCount, 136)
   drawLabelValue('每次 / 每秒修炼', '+' + clickGain + ' / +' + autoGain, 156)
-  drawLabelValue('当前功法', getTechniqueDisplayName(), 176)
+  drawText('当前功法', 28, 176, 14, '#2f3542')
+  drawSingleLineText(getTechniqueDisplayName(), 104, 176, 132, 13, '#9a5d20')
+  drawButton(250, 164, 96, 24, '功法详情', '#526d5b', function () { currentPage='technique'; drawGame() })
   drawLabelValue('灵根 / 功法等级', getSpiritRootText() + ' / ' + gameData.currentTechnique.level, 196)
   drawLabelValue(
     '战斗力',
@@ -1015,9 +1017,17 @@ function isInAdventureLogArea(x, y) {
 function isInRebirthPrepareContentArea(x,y) {
   return currentPage === 'rebirth_prepare' && x >= 14 && x <= 361 && y >= 188 && y <= getNavigationY() - 106
 }
+function isInRebirthPageContentArea(x,y) {
+  // 重生页和特殊天赋选择页都可能比一屏更长，复用同一套滚动状态。
+  return (currentPage === 'rebirth' || currentPage === 'special_talent_choice') && x >= 14 && x <= 361 && y >= 68 && y <= getNavigationY() - 8
+}
 function clampRebirthPrepareScroll() {
   const max=Math.max(0,rebirthPrepareContentHeight-rebirthPrepareViewportHeight)
   rebirthPrepareScrollY=Math.max(0,Math.min(rebirthPrepareScrollY,max))
+}
+function clampRebirthPageScroll() {
+  const max = Math.max(0, rebirthPageContentHeight - rebirthPageViewportHeight)
+  rebirthPageScrollY = Math.max(0, Math.min(rebirthPageScrollY, max))
 }
 function showOptionDetail(title,description,cost,extraText) {
   let content=String(description||'')
@@ -1237,19 +1247,50 @@ function drawMansionTab() {
   }
 }
 
+// 功法详情页：把功法、灵根和最终修炼倍率拆开显示，方便确认实际生效情况。
+function drawTechniquePage() {
+  const t = gameData.currentTechnique
+  const bottom = getNavigationY() - 8
+  drawRoundedRect(14,68,347,bottom-60,10,'#fffdf7','#ded7c8')
+  drawCenteredText('当前功法',92,18,'#8b4513','bold')
+  if (!t) {
+    drawCenteredText('尚未获得可修炼功法',160,14,'#8a857a')
+    drawButton(105,bottom-44,165,34,'返回修炼','#737a70',function(){currentPage='cultivate';drawGame()})
+    return
+  }
+  drawText(getTechniqueDisplayName(),27,124,17,'#8b4513','bold')
+  drawText('属性：'+((SPIRIT_ROOT_TYPES.find(function(root){return root.id===t.element})||{}).name||t.element)+'    等级：'+t.level,27,148,12,'#625c50')
+  drawText('基础修炼增幅：+'+Math.round((t.baseRate||0)*100)+'%    等级增幅：+'+Math.max(0,t.level-1)*2+'%',27,170,12,'#625c50')
+  drawText('功法词条',27,202,15,'#37474f','bold')
+  const effects=(t.effects||[])
+  if (!effects.length) drawText('暂无额外词条',27,224,12,'#8a857a')
+  effects.forEach(function(effect,index){drawText('· '+effect.name+' +'+Math.round(effect.value*100)+'%',27,224+index*20,12,'#625c50')})
+  const breakdown=getCultivationSpeedBreakdown()
+  // 每个词条占一行，避免词条较多时覆盖下面的倍率说明。
+  const y=effects.length ? 252 + effects.length * 20 : 252
+  drawText('修炼速度组成',27,y,15,'#37474f','bold')
+  let lineY=y+24
+  breakdown.items.forEach(function(item){drawText(item.name+'：×'+formatRate(item.rate),27,lineY,12,item.highlight?'#8b4513':'#625c50',item.highlight?'bold':'normal');lineY+=18})
+  drawText('最终修炼倍率：×'+formatRate(breakdown.total),27,lineY+8,15,'#8b4513','bold')
+  drawWrappedText('此倍率已用于主动修炼、聚灵阵自动修炼与离线自动修炼。',27,lineY+34,310,17,11,'#8a857a')
+  drawButton(105,bottom-44,165,34,'返回修炼','#737a70',function(){currentPage='cultivate';drawGame()})
+}
+
 // 轮回页只展示永久数据，避免和本轮修炼数据混在一起。
 function drawRebirthPage() {
-  drawRoundedRect(14, 68, 347, 438, 10, '#fffdf7', '#ded7c8')
+  const top=68, bottom=getNavigationY()-8, viewportHeight=bottom-top
+  drawRoundedRect(14, top, 347, viewportHeight, 10, '#fffdf7', '#ded7c8')
   const highestRealm = REALMS[gameData.highestRealmIndex]
   const quality = getRebirthQuality()
-
-  drawText('轮回重生', 27, 91, 18, '#8b4513', 'bold')
-  drawLabelValue('轮回次数', gameData.rebirthCount, 118)
-  drawLabelValue('历史最高境界', highestRealm.name, 142)
-  drawLabelValue('本次天赋品质', quality ? TALENT_QUALITIES[quality].name : '筑基期后解锁', 166)
-  drawText('首通：' + getBossDefeatedCount() + '/' + ADVENTURE_MAPS.length, 270, 91, 12, '#625c50')
-  drawText('可用轮回点：' + formatNumber(gameData.rebirthPoints) + '  累计：' + formatNumber(gameData.totalRebirthPoints) + '  修炼：+' + formatNumber(gameData.totalRebirthPoints) + '%', 27, 178, 11, '#625c50')
-  drawText('常规天赋（同类型仅保留最高品质）', 27, 190, 14, '#37474f', 'bold')
+  let y=91-rebirthPageScrollY
+  context.save(); context.beginPath(); context.rect(14,top,347,viewportHeight); context.clip()
+  drawText('轮回重生', 27, y, 18, '#8b4513', 'bold')
+  drawText('首通：' + getBossDefeatedCount() + '/' + ADVENTURE_MAPS.length, 270, y, 12, '#625c50'); y+=27
+  drawLabelValue('轮回次数', gameData.rebirthCount, y); y+=24
+  drawLabelValue('历史最高境界', highestRealm.name, y); y+=24
+  drawLabelValue('本次天赋品质', quality ? TALENT_QUALITIES[quality].name : '筑基期后解锁', y); y+=24
+  drawWrappedText('可用轮回点：' + formatNumber(gameData.rebirthPoints) + '  累计：' + formatNumber(gameData.totalRebirthPoints) + '  修炼：+' + formatNumber(gameData.totalRebirthPoints) + '%',27,y,310,17,11,'#625c50'); y+=38
+  drawText('常规天赋（同类型仅保留最高品质）', 27, y, 14, '#37474f', 'bold'); y+=22
 
   const talentTypes = [
     { type: 'cultivation', label: '修炼' },
@@ -1260,49 +1301,46 @@ function drawRebirthPage() {
   for (let i = 0; i < talentTypes.length; i++) {
     const item = talentTypes[i]
     const talent = gameData.talents[item.type]
-    const y = 215 + i * 28
     drawText(item.label + '：', 27, y, 13, '#2f3542')
     if (talent) {
-      drawText(
-        talent.qualityName + '·' + talent.name + '（' + talent.description + '）',
-        78,
-        y,
-        12,
-        TALENT_QUALITIES[talent.quality].color,
-        'bold'
-      )
+      drawWrappedText(talent.qualityName + '·' + talent.name + '：' + talent.description,78,y,250,17,12,TALENT_QUALITIES[talent.quality].color)
+      y+=Math.max(28,wrapTextLines(talent.qualityName+'·'+talent.name+'：'+talent.description,250,12,'normal').length*17+8)
     } else {
       drawText('未获得', 78, y, 12, '#8a857a')
+      y+=28
     }
   }
-
-  drawText('本世特殊天赋（下一世最多继承一个）', 27, 340, 14, '#37474f', 'bold')
+  y+=8
+  drawText('本世特殊天赋（下一世最多继承一个）', 27, y, 14, '#37474f', 'bold'); y+=22
   for (let i = 0; i < 2; i++) {
     const talent = gameData.specialTalents[i]
-    const y = 365 + i * 35
     if (talent) {
-      drawText('特殊天赋 ' + (i + 1) + '：' + talent.name, 27, y, 13, '#8b4513', 'bold')
-      drawSingleLineText(
-        talent.description + getSpecialTalentProgressText(talent.id),
-        27,
-        y + 16,
-        220,
-        11,
-        '#625c50'
-      )
+      const description=talent.description + getSpecialTalentProgressText(talent.id)
+      const lines=wrapTextLines(description,210,11,'normal')
+      const cardHeight=42+lines.length*17
+      drawRoundedRect(20,y-14,330,cardHeight,8,'#f8f4e9','#ded7c8')
+      drawText('①②'.charAt(i)+' '+talent.name,27,y+2,13,'#8b4513','bold')
+      drawWrappedText(description,27,y+20,210,17,11,'#625c50')
       const selected = gameData.selectedInheritedSpecialTalentId === talent.id
-      drawButton(258, y - 12, 90, 28, selected ? '已选择继承' : '选择继承', selected ? '#8b4513' : '#526d5b', function () {
+      drawButton(250, y+2,90,28, selected ? '已选择继承' : '选择继承', selected ? '#8b4513' : '#526d5b', function () {
         selectInheritedSpecialTalent(talent.id)
-      })
+      },function(){showSelectionDetail({name:talent.name,rarity:'特殊天赋',description:talent.description+getSpecialTalentProgressText(talent.id)})})
+      y+=cardHeight+10
     } else {
       drawText('特殊天赋 ' + (i + 1) + '：尚未获得', 27, y, 13, '#8a857a')
+      y+=28
     }
   }
-
-  drawButton(27, 400, 321, 28, '任务与成就', '#456b78', function () { currentPage='goals'; drawGame() })
-  drawButton(27, 432, 140, 28, '不继承任何天赋', '#737a70', clearInheritedSpecialTalent)
+  y+=6
+  drawButton(27,y,321,32,'任务与成就','#456b78',function(){currentPage='goals';drawGame()}); y+=40
+  drawButton(27,y,140,32,'不继承任何天赋','#737a70',clearInheritedSpecialTalent)
   const buttonText = canRebirth() ? '轮回重生' : '筑基期后解锁重生'
-  drawButton(177, 432, 171, 28, buttonText, canRebirth() ? '#8b3a3a' : '#737a70', clickRebirthButton)
+  drawButton(177,y,171,32,buttonText,canRebirth()?'#8b3a3a':'#737a70',clickRebirthButton)
+  y+=52
+  context.restore()
+  rebirthPageContentHeight=y-top
+  rebirthPageViewportHeight=viewportHeight
+  clampRebirthPageScroll()
 }
 
 function drawRandomEventPage() {
@@ -1363,10 +1401,26 @@ function drawRebirthPreparePage() {
 // 已经扣费的多选一流程会单独占用页面，玩家只能完成选择，避免中途退出造成损失。
 function drawSpecialTalentChoicePage() {
   const choices=gameData.pendingSpecialTalentChoices||[]
-  drawRoundedRect(14,68,347,430,10,'#fffdf7','#ded7c8')
+  const top=68, bottom=getNavigationY()-8, viewportHeight=bottom-top
+  drawRoundedRect(14,top,347,viewportHeight,10,'#fffdf7','#ded7c8')
   drawCenteredText('选择新特殊天赋',94,18,'#8b4513','bold')
-  drawText('本次轮回已确认，请从候选中选择一个。',27,120,12,'#625c50')
-  choices.forEach(function(talent,index){const y=145+index*78;drawRoundedRect(22,y,331,66,8,'#f8f4e9','#ded7c8');drawText(talent.name,36,y+18,15,'#8b4513','bold');drawSingleLineText(talent.description,36,y+37,220,11,'#625c50');drawButton(267,y+17,72,32,'选择','#8b4513',function(){choosePendingSpecialTalent(talent.id)})})
+  drawText('点击选择，长按“选择”可查看完整效果。',27,120,11,'#625c50')
+  context.save(); context.beginPath(); context.rect(14,128,347,bottom-128); context.clip()
+  let y=145-rebirthPageScrollY
+  choices.forEach(function(talent,index){
+    const lines=wrapTextLines(talent.description,220,11,'normal')
+    const height=Math.max(72,34+lines.length*17+12)
+    drawRoundedRect(22,y,331,height,8,'#f8f4e9','#ded7c8')
+    drawText((index+1)+'、'+talent.name,36,y+18,15,'#8b4513','bold')
+    drawWrappedText(talent.description,36,y+38,220,17,11,'#625c50')
+    drawButton(267,y+17,72,32,'选择','#8b4513',function(){choosePendingSpecialTalent(talent.id)},function(){showSelectionDetail({name:talent.name,rarity:'特殊天赋',description:talent.description})})
+    y+=height+10
+  })
+  context.restore()
+  // 内容高度由说明文字实际行数决定，超过一屏时可上下滑动查看。
+  rebirthPageContentHeight=y+rebirthPageScrollY-top+12
+  rebirthPageViewportHeight=bottom-top
+  clampRebirthPageScroll()
 }
 function choosePendingSpecialTalent(id) {
   if(!rebirthPreparationSubmitting)return
@@ -1558,6 +1612,7 @@ function getAdventureRiskLabel(powerRatio) {
 
 // 以下是六个按钮对应的游戏逻辑。
 function cultivateOnce() {
+  const cultivationBefore = gameData.cultivation
   if (refreshInjuryStatus()) {
     saveGame()
   }
@@ -1606,6 +1661,16 @@ function cultivateOnce() {
   updateRunTaskProgress('manual_click', 1)
   checkAchievements()
   saveAndDraw()
+  // 凡人首次达到 10 点修为时给出明确引导；只在跨过门槛的那一次弹出。
+  if (gameData.realmIndex === 0 && cultivationBefore < REALMS[0].cost && gameData.cultivation >= REALMS[0].cost) {
+    platform.showModal({
+      title:'修为已达到突破条件！',
+      content:'是否尝试突破？\n\n突破后解锁：\n- 历练\n- 地图\n- 装备\n- 宗门',
+      confirmText:'尝试突破',
+      cancelText:'稍后再说',
+      success:function(res){if(res.confirm)breakthrough()}
+    })
+  }
 }
 
 // 疗伤每点击一次，将受伤结束时间提前 1 秒。
@@ -2384,6 +2449,7 @@ function executePreparedRebirth() {
   if(preparation.specialTalentChoiceCount>1&&choices.length){
     gameData.pendingSpecialTalentChoices=choices
     gameData.pendingRebirthPreparation=preparation
+    rebirthPageScrollY=0
     currentPage='special_talent_choice';saveAndDraw();return
   }
   beginPreparedRebirth(preparation,choices[0]||null)
@@ -2449,6 +2515,7 @@ function beginPreparedRebirth(preparation, selectedNewSpecialTalent) {
   gameData.mansionLevel = inheritedMansionLevel
   gameData.guardStoneProgress = 0
   gameData.lastGuardRewardTime = Date.now()
+  gameData.lastUpdateTime = gameData.lastGuardRewardTime
   gameData.equipmentSlots = { weapon: null, armor: null, shoes: null, accessory: null }
   // 宗门属于本世成长内容，下一世重新从基础宗门进度开始。
   gameData.primordialSpirit = { level:1, exp:0, breakthroughCount:0, trialLevel:0, equippedAbilityIds:[], trialCooldownEndTime:0 }
@@ -2648,7 +2715,8 @@ function getSafeGrowthCost(value) {
 
 function getClickPowerBySkillLevel(level) {
   const safeLevel = Math.max(1, Math.floor(level))
-  return Math.max(1, Math.floor(Math.pow(1.18, safeLevel - 1)))
+  // 新玩家首次修炼即可获得 10 点修为，正好满足凡人突破炼气的条件。
+  return Math.max(10, Math.floor(10 * Math.pow(1.18, safeLevel - 1)))
 }
 
 function randomSpiritRoot(forceSingle){const ids=SPIRIT_ROOT_TYPES.map(function(x){return x.id});const roll=Math.random();const count=forceSingle?1:roll<.05?1:roll<.20?2:roll<.50?3:roll<.85?4:5;for(let i=ids.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));const t=ids[i];ids[i]=ids[j];ids[j]=t}gameData.spiritRoots=ids.slice(0,count);return gameData.spiritRoots}
@@ -2656,13 +2724,36 @@ function getSpiritRootMultiplier(){const n=(gameData.spiritRoots||[]).length;ret
 function getSpiritRootText(){const roots=gameData.spiritRoots||[];const names=roots.map(function(id){return (SPIRIT_ROOT_TYPES.find(function(x){return x.id===id})||{}).color||id});if(roots.length===1)return '天灵根·'+names[0];if(roots.length===2)return '双灵根·'+names.join('');if(roots.length===3)return '三灵根·'+names.join('');if(roots.length===5)return '杂灵根';return '四灵根·'+names.join('')}
 function canUseTechniqueElement(element){const roots=gameData.spiritRoots||[];return roots.length===5||roots.indexOf(element)>=0}
 function getRandomTechnique(element,rankName){const elementId=element||gameData.spiritRoots[Math.floor(Math.random()*gameData.spiritRoots.length)]||'fire';const rank=rankName||'洪阶',range=TECHNIQUE_EFFECT_RANGE[rank]||[.05,.1],quality=['low','middle','high'][Math.floor(Math.random()*3)],effectCount=quality==='high'?2:quality==='middle'?1:0,effects=[],pool=TECHNIQUE_EFFECTS.slice();for(let i=0;i<effectCount;i++){const source=pool.splice(Math.floor(Math.random()*pool.length),1)[0];effects.push({type:source.type,name:source.name,value:source.range[0]+Math.random()*(source.range[1]-source.range[0])})}return {id:'technique_'+Date.now()+'_'+Math.floor(Math.random()*100000),name:TECHNIQUE_NAMES[elementId][Math.floor(Math.random()*TECHNIQUE_NAMES[elementId].length)],element:elementId,rank:rank,quality:quality,level:1,baseRate:range[0]+Math.random()*(range[1]-range[0]),effects:effects}}
-function getTechniqueCultivationRate(){const t=gameData.currentTechnique;if(!t)return 1;return 1+(t.baseRate||0)+(t.level-1)*.02+getTechniqueEffectRate('cultivation')}
+// 基础功法效果与“修炼增幅”词条分开计算，详情页能准确展示每一项来源。
+function getTechniqueBaseCultivationRate(){const t=gameData.currentTechnique;if(!t)return 1;return 1+(t.baseRate||0)+(t.level-1)*.02}
+function getTechniqueEffectCultivationRate(){return 1+getTechniqueEffectRate('cultivation')}
+function getTechniqueCultivationRate(){return getTechniqueBaseCultivationRate()*getTechniqueEffectCultivationRate()}
 function getTechniqueEffectRate(type){const t=gameData.currentTechnique;if(!t)return 0;return (t.effects||[]).filter(function(e){return e.type===type}).reduce(function(sum,e){return sum+(Number(e.value)||0)},0)}
 function getTechniqueQualityName(quality){return quality==='high'?'上品':quality==='middle'?'中品':'下品'}
 function improveTechniqueQuality(technique){if(!technique)return;if(technique.quality==='low')technique.quality='middle';else if(technique.quality==='middle')technique.quality='high'}
 function addRandomTechniqueEffect(technique){if(!technique)return;const used=(technique.effects||[]).map(function(item){return item.type}),pool=TECHNIQUE_EFFECTS.filter(function(item){return used.indexOf(item.type)<0});if(!pool.length)return;const source=pool[Math.floor(Math.random()*pool.length)];technique.effects=technique.effects||[];technique.effects.push({type:source.type,name:source.name,value:source.range[0]+Math.random()*(source.range[1]-source.range[0])})}
 function getTechniqueDisplayName(){const t=gameData.currentTechnique;return t?t.rank+getTechniqueQualityName(t.quality)+'·'+t.name:'未修炼功法'}
-function showCurrentTechniqueDetail(){const t=gameData.currentTechnique;if(!t){showMessage('当前没有功法');return}const rootNames=gameData.spiritRoots.map(function(id){return (SPIRIT_ROOT_TYPES.find(function(root){return root.id===id})||{}).name}).join('、');const effects=(t.effects||[]).map(function(effect){return effect.name+' +'+Math.round(effect.value*100)+'%'}).join('\n')||'无额外词条';platform.showModal({title:getTechniqueDisplayName(),content:'等级：'+t.level+'\n灵根：'+getSpiritRootText()+'（x'+getSpiritRootMultiplier()+'）\n可修炼：'+rootNames+'\n基础修炼增幅：+'+Math.round(t.baseRate*100)+'%\n\n额外词条：\n'+effects,showCancel:false,confirmText:'知道了'})}
+function showCurrentTechniqueDetail(){if(!gameData.currentTechnique){showMessage('当前没有功法');return}currentPage='technique';drawGame()}
+
+function formatRate(rate){return (Number(rate)||1).toFixed(2)}
+function getCultivationSpeedBreakdown(){
+  const items=[
+    {name:'基础',rate:1},
+    {name:'境界',rate:REALMS[gameData.realmIndex].cultivateRate},
+    {name:'灵根',rate:getSpiritRootMultiplier(),highlight:true},
+    {name:'功法',rate:getTechniqueBaseCultivationRate(),highlight:true},
+    {name:'功法词条',rate:getTechniqueEffectCultivationRate(),highlight:true},
+    {name:'常规天赋 / 轮回印记',rate:getCultivationTalentRate()},
+    {name:'洞府',rate:getMansionCultivationRate()},
+    {name:'累计轮回点',rate:getTotalRebirthPointCultivationRate()},
+    {name:'元神',rate:getPrimordialSpiritCultivationRate()},
+    {name:'气运 / 本轮事件',rate:getLifeFortuneCultivationRate()*(1+gameData.runCultivationBonus)},
+    {name:'特殊天赋',rate:hasSpecialTalent('spirit_body_awakened')?1.5:1},
+    {name:'聚气丹 / 伤后增益',rate:(Date.now()<gameData.pillBuffEndTime?1.5:1)*(Date.now()<gameData.postInjuryBuffEndTime?1.5:1)}
+  ]
+  const total=items.reduce(function(value,item){return value*item.rate},1)
+  return {items:items,total:total}
+}
 
 function getCultivationGain(basePower) {
   const realmRate = REALMS[gameData.realmIndex].cultivateRate
@@ -3182,33 +3273,50 @@ function getOfflineAutoCultivationGainPerSecond() {
   return toSafeInteger(gain)
 }
 
-// 离线灵石与离线修为统一结算，避免两套函数分别更新时间造成重复奖励。
-function settleOfflineRewards() {
+// 统一按真实时间差结算收益。前台定时器被浏览器降频时，也会补上遗漏秒数。
+function calculateOfflineProgress(isOffline) {
   const result = { offlineSeconds: 0, stoneGain: 0, cultivationGain: 0 }
-  if (!gameData.lastGuardRewardTime) {
-    gameData.lastGuardRewardTime = Date.now()
+  const now = Date.now()
+  if (!Number.isFinite(gameData.lastUpdateTime) || gameData.lastUpdateTime <= 0) {
+    gameData.lastUpdateTime = now
+    gameData.lastGuardRewardTime = now
     return result
   }
-  const now = Date.now()
-  let offlineSeconds = Math.floor((now - gameData.lastGuardRewardTime) / 1000)
-  offlineSeconds = Math.max(0, Math.min(offlineSeconds, getOfflineGuardLimitSeconds()))
-  const stoneGain = toSafeInteger(offlineSeconds * getGuardStonePerSecond())
-  const cultivationGain = toSafeInteger(
-    offlineSeconds * getOfflineAutoCultivationGainPerSecond() *
-    getOfflineCultivationRate()
-  )
+  let seconds = Math.floor((now - gameData.lastUpdateTime) / 1000)
+  if (seconds <= 0) return result
+  // 离开页面时遵守洞府的离线收益上限；前台偶发卡顿则按真实时间完整补算。
+  if (isOffline) seconds = Math.min(seconds, getOfflineGuardLimitSeconds())
+  seconds = Math.max(0, seconds)
+  let cultivationPerSecond = isOffline
+    ? getOfflineAutoCultivationGainPerSecond() * getOfflineCultivationRate()
+    : getAutoCultivationGain(gameData.autoPower)
+  // 自我管理本质上也是每秒一次模拟手动修炼，后台补算时同样不能遗漏。
+  if (hasSpecialTalent('self_management') && gameData.injuryStatus === 'none') {
+    let selfGain = getManualCultivationGain(gameData.clickPower, false)
+    if (!isOffline && Date.now() < gameData.pillBuffEndTime && hasSpecialTalent('pill_resonance')) {
+      selfGain = Math.max(1, Math.floor(selfGain * 1.5))
+    }
+    cultivationPerSecond += selfGain
+  }
+  const cultivationGain = toSafeInteger(seconds * cultivationPerSecond)
+  gameData.guardStoneProgress += seconds * getGuardStonePerSecond()
+  const stoneGain = Math.floor(gameData.guardStoneProgress)
   if (stoneGain > 0) {
     gameData.spiritStone += stoneGain
+    gameData.guardStoneProgress -= stoneGain
   }
-  if (cultivationGain > 0) {
-    gameData.cultivation += cultivationGain
-  }
-  // 无论收益是否为 0 都更新时间，确保同一段时间永远只结算一次。
+  if (cultivationGain > 0) gameData.cultivation += cultivationGain
+  gameData.lastUpdateTime = now
   gameData.lastGuardRewardTime = now
-  result.offlineSeconds = offlineSeconds
+  result.offlineSeconds = seconds
   result.stoneGain = stoneGain
   result.cultivationGain = cultivationGain
   return result
+}
+
+// 保留旧函数名，现有前后台流程仍能进入统一的真实时间结算。
+function settleOfflineRewards() {
+  return calculateOfflineProgress(true)
 }
 
 // 保留旧函数名作为兼容入口，后续旧调用也会走新的统一结算。
@@ -3233,7 +3341,7 @@ function showOfflineSettlementModal(result) {
     return
   }
   platform.showModal({
-    title: '闭关结算',
+    title: '闭关结束',
     content: '离线时间：' + formatOfflineDuration(result.offlineSeconds) +
       '\n获得修为：' + formatNumber(result.cultivationGain) +
       '\n镇守洞府获得灵石：' + formatNumber(result.stoneGain),
@@ -3419,6 +3527,10 @@ function loadGame() {
   }
   if (!Number.isFinite(gameData.lastGuardRewardTime) || gameData.lastGuardRewardTime <= 0) {
     gameData.lastGuardRewardTime = Date.now()
+  }
+  // 旧存档没有统一更新时间时，从原镇守时间继承，避免第一次打开漏算或重复结算。
+  if (!Number.isFinite(gameData.lastUpdateTime) || gameData.lastUpdateTime <= 0) {
+    gameData.lastUpdateTime = gameData.lastGuardRewardTime
   }
 
   // 功法和聚灵阵等级异常时修正，并始终以功法等级重新计算点击基础值。

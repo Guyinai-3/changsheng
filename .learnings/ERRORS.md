@@ -56,6 +56,25 @@ Treat no-match as a successful negative assertion when validating removed hard l
 
 ---
 
+## [ERR-20260716-005] external_static_server_not_reachable
+
+**Logged**: 2026-07-16T00:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: testing
+
+### Summary
+The first externally started local static server could not be reached by the in-app browser.
+
+### Suggested Fix
+For this desktop test environment, start the temporary local server in the same Node runtime that controls the browser, then shut it down after verification.
+
+### Resolution
+- **Resolved**: 2026-07-16T00:00:00+08:00
+- **Notes**: Browser verification continued through a local Node REPL server.
+
+---
+
 ## [ERR-20260716-003] browser_screenshot_after_reload_timeout
 
 **Logged**: 2026-07-16T00:00:00+08:00
@@ -279,5 +298,24 @@ A GitHub remote verification request intermittently failed during the TLS handsh
 
 ### Suggested Fix
 Retry the remote check if needed. The local branch tracks `origin/master`; a transient TLS failure should not be treated as a rejected push.
+
+---
+
+## [ERR-20260716-004] multi_context_patch_mismatch
+
+**Logged**: 2026-07-16T00:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: frontend
+
+### Summary
+A broad patch for the Canvas timer did not match the exact local comment context and made no changes.
+
+### Suggested Fix
+Inspect the current section and apply smaller, independently anchored patches.
+
+### Resolution
+- **Resolved**: 2026-07-16T00:00:00+08:00
+- **Notes**: The timer and lifecycle changes were applied in smaller patches.
 
 ---
