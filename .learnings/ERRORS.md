@@ -247,3 +247,22 @@ The workspace sandbox blocked writes to `.git/config` and `.git/index.lock` duri
 Use the approved Git metadata write permission for remote configuration, staging, commits, and push operations.
 
 ---
+
+## [ERR-20260716-002] github_push_auth_missing
+
+**Logged**: 2026-07-16T00:00:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: config
+
+### Summary
+The configured GitHub remote accepts reads, but this Windows Git installation has no authenticated credential available for writing to the repository.
+
+### Suggested Fix
+Sign in once through Git Credential Manager or configure a GitHub token/SSH key, then run `git push origin master`.
+
+### Resolution
+- **Resolved**: 2026-07-16T00:00:00+08:00
+- **Notes**: GitHub authorization completed and the initial project commit was pushed successfully.
+
+---
