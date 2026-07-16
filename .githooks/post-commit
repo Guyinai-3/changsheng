@@ -4,6 +4,6 @@
 branch="$(git branch --show-current)"
 
 if [ -n "$branch" ]; then
-  # 放入后台，不让网络或登录窗口阻塞本地提交。
-  (git push origin "$branch" >/dev/null 2>&1 &)
+  # 同步推送，确保提交成功后 GitHub 一定收到；推送失败会明确提示。
+  git push origin "$branch" || echo "自动推送未完成，请稍后执行 git push origin $branch"
 fi
