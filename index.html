@@ -171,6 +171,18 @@
     .modal-actions .cancel { background: #737a70; }
     .modal-actions .confirm { background: #8b4513; }
 
+    #cloud-save-panel[hidden] { display: none; }
+    #cloud-save-panel { position: fixed; inset: 0; z-index: 1050; display: flex; align-items: center; justify-content: center; padding: 22px; background: rgba(10, 14, 11, .68); }
+    .cloud-card { width: min(92vw, 390px); padding: 20px; color: #423d35; background: #fffdf7; border: 1px solid #d8cebb; border-radius: 14px; box-shadow: 0 20px 70px rgba(0,0,0,.42); }
+    .cloud-card h2 { margin: 0 0 16px; color: #7b3e25; text-align: center; font-size: 19px; }
+    .cloud-row { display: grid; grid-template-columns: 82px 1fr; gap: 8px; padding: 9px 0; border-bottom: 1px solid #ece4d6; font-size: 14px; }
+    .cloud-row span:first-child { color: #736b5d; }
+    .cloud-row span:last-child { overflow-wrap: anywhere; color: #423d35; }
+    .cloud-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 16px; }
+    .cloud-actions button { padding: 10px 8px; border: 0; border-radius: 8px; color: #fff; background: #526d5b; font: inherit; cursor: pointer; }
+    .cloud-actions .danger { background: #8b3a3a; }
+    .cloud-actions .wide { grid-column: 1 / -1; background: #737a70; }
+
     #toast {
       position: fixed;
       left: 50%;
@@ -218,6 +230,7 @@
     <nav id="web-toolbar" aria-label="浏览器存档工具">
       <span class="title">本机存档</span>
       <button id="save-help-button" type="button">说明</button>
+      <button id="cloud-save-button" type="button">云存档</button>
       <button id="export-save-button" type="button">导出</button>
       <button id="import-save-button" type="button">导入</button>
       <input id="save-file-input" type="file" accept="application/json,.json">
@@ -238,8 +251,26 @@
     </section>
   </div>
 
+  <section id="cloud-save-panel" hidden aria-label="云存档设置">
+    <div class="cloud-card">
+      <h2>云存档设置</h2>
+      <div class="cloud-row"><span>账号:</span><span id="cloud-account-id">载入中</span></div>
+      <div class="cloud-row"><span>云存档:</span><span id="cloud-sync-state">载入中</span></div>
+      <div class="cloud-row"><span>最后保存:</span><span id="cloud-last-saved">尚未保存</span></div>
+      <div class="cloud-actions">
+        <button id="cloud-save-now" type="button">立即保存</button>
+        <button id="cloud-reload-save" type="button">重新加载云存档</button>
+        <button id="cloud-switch-account" type="button">切换账号</button>
+        <button id="cloud-delete-save" class="danger" type="button">删除云存档</button>
+        <button id="cloud-save-close" class="wide" type="button">关闭</button>
+      </div>
+    </div>
+  </section>
+
   <div id="toast" role="status" aria-live="polite"></div>
 
+  <script src="cloudConfig.js"></script>
+  <script src="cloudSave.js"></script>
   <script src="platform.js"></script>
   <script src="game.js"></script>
 </body>

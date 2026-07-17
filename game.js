@@ -346,6 +346,11 @@ const gameData = {
   lastGuardRewardTime: Date.now(),
   // 所有在线、后台与离线收益都从这一个时间点计算，避免浏览器限速漏算收益。
   lastUpdateTime: Date.now(),
+  // 本地和云端用这组字段比较完整快照的新旧。
+  saveVersion: 1,
+  updateTime: new Date().toISOString(),
+  updateTimeMs: Date.now(),
+  lastOnlineTime: Date.now(),
   // 所有地图 Boss 共用一个挑战冷却；首通状态用于区分首通和重复奖励。
   bossCooldownEndTime: 0,
   bossDefeated: {
@@ -607,12 +612,43 @@ function getCurrentScene() {
   return 'cultivate'
 }
 
-loadGame()
-drawAssetLoadingScreen()
-loadGameImages(function () {
-  drawGame()
-  startTimer()
-})
+// 先恢复本地缓存，再异步比较云端快照；云端失败时照常启动本地游戏。
+async function initializeGame() {
+  loadGame()
+  if (window.CloudSaveManager) {
+    const result = await window.CloudSaveManager.loadGameFromCloud(gameData)
+    if (result && result.source === 'cloud' && result.saveData) {
+      loadGame(result.saveData)
+    } else if (result && result.shouldUpload) {
+      saveGame({ immediate: true, reason: 'startup' })
+    }
+  }
+  // 首次打开同样按 lastOnlineTime 补算；不能只依赖浏览器前后台事件。
+  const initialOfflineResult = settleOfflineRewards()
+  saveGame()
+  drawAssetLoadingScreen()
+  loadGameImages(function () {
+    drawGame()
+    showOfflineSettlementModal(initialOfflineResult)
+    startTimer()
+  })
+}
+
+window.getCurrentGameSave = function () { return gameData }
+window.reloadGameFromCloud = async function () {
+  if (!window.CloudSaveManager) return
+  const result = await window.CloudSaveManager.loadGameFromCloud({ updateTimeMs: 0, updateTime: '' })
+  if (result && result.source === 'cloud' && result.saveData) {
+    loadGame(result.saveData)
+    platform.setStorageSync(SAVE_KEY, gameData)
+    drawGame()
+    platform.showToast({ title: '已重新加载云存档' })
+  } else {
+    platform.showToast({ title: '云端暂无可加载的存档' })
+  }
+}
+
+initializeGame()
 
 // 页面回到前台时，根据保存的结束时间继续显示倒计时。
 platform.onShow(function () {
@@ -634,7 +670,7 @@ platform.onHide(function () {
   // 退出前记录时间，下一次进入时从这里开始按真实经过时间补算。
   gameData.lastUpdateTime = Date.now()
   gameData.lastGuardRewardTime = gameData.lastUpdateTime
-  saveGame()
+  saveGame({ immediate: true, reason: 'background' })
 })
 
 // 监听玩家触摸，判断触摸点落在哪一个按钮内。
@@ -1235,7 +1271,7 @@ function refreshSectDailyTasks(){
   return true
 }
 function updateSectTaskStates(){gameData.sect.dailyTasks.forEach(function(task){let value=0;if(task.type==='manual')value=gameData.lifetimeStats.totalCultivationClicks-task.startValue;if(task.type==='adventure'||task.type==='collect')value=gameData.lifetimeStats.totalAdventures-task.startValue;if(task.type==='boss')value=gameData.lifetimeStats.totalBossWins-task.startValue;if(task.type==='realm')value=Math.max(0,gameData.realmIndex-task.startValue);task.progress=Math.max(task.progress||0,value);task.completed=task.progress>=task.target})}
-function claimSectTask(taskId){const task=gameData.sect.dailyTasks.find(function(t){return t.id===taskId});updateSectTaskStates();if(!task||!task.completed||task.claimed){showMessage('任务尚未完成');return}task.claimed=true;gameData.spiritStone+=task.stone;gameData.sect.forgeMaterials+=Math.max(0,Math.floor(Number(task.material)||0));addSectContribution(task.contribution,Math.max(1,Math.floor(task.contribution/10)));gameData.sect.completedTasks++;gameData.sect.sectLevel=1+Math.floor(gameData.sect.completedTasks/20);addAdventureLog('完成宗门任务【'+task.name+'】，获得贡献 +'+task.contribution+(task.material?'，玄铁精 +'+task.material:'')+'。','system');saveAndDraw()}
+function claimSectTask(taskId){const task=gameData.sect.dailyTasks.find(function(t){return t.id===taskId});updateSectTaskStates();if(!task||!task.completed||task.claimed){showMessage('任务尚未完成');return}task.claimed=true;gameData.spiritStone+=task.stone;gameData.sect.forgeMaterials+=Math.max(0,Math.floor(Number(task.material)||0));addSectContribution(task.contribution,Math.max(1,Math.floor(task.contribution/10)));gameData.sect.completedTasks++;gameData.sect.sectLevel=1+Math.floor(gameData.sect.completedTasks/20);addAdventureLog('完成宗门任务【'+task.name+'】，获得贡献 +'+task.contribution+(task.material?'，玄铁精 +'+task.material:'')+'。','system');saveAndDraw({immediate:true,reason:'sect-task'})}
 function getSectMaxEquipmentRankIndex(){const major=getMajorRealmLevel(),realmMax=major<=0?-1:major===1?1:major===2?4:major===3?5:major===4?6:7,position=getSectPositionIndex(),positionMax=position<1?-1:position===1?1:position===2?2:position===3?4:position===4?5:position===5?6:7;return Math.min(realmMax,positionMax)}
 function getSectEquipmentUpgrade(equipment){const current=gameData.equipmentSlots[equipment.slot];return equipment.power-(current?current.power:0)}
 function getEquipmentQualityLabel(equipment){const rank=EQUIPMENT_RANKS.find(function(item){return item.name===equipment.rank});if(!rank)return '中品';const ratio=(equipment.power-rank.powerMin)/Math.max(1,rank.powerMax-rank.powerMin);return ratio>=.67?'上品':ratio>=.34?'中品':'下品'}
@@ -1258,7 +1294,7 @@ function getAvailableSectEquipment(){
   return stock.slice(0,4)
 }
 function generateSectEquipmentStock(){return getAvailableSectEquipment()}
-function buySectEquipment(id){const item=gameData.sect.shopEquipmentStock.find(function(x){return x.id===id});if(!item){showMessage('兑换物不存在');return}if(item.sold){showMessage('该装备已兑换');return}if(getSectPositionIndex()<1){showMessage('外门弟子后解锁装备兑换');return}if(getSectEquipmentUpgrade(item.equipment)<=0){showMessage('该装备已不再提供提升');return}if(gameData.sectContribution<item.cost){showMessage('宗门贡献不足');return}gameData.sectContribution-=item.cost;gameData.sect.contribution=gameData.sectContribution;item.sold=true;addAdventureLog('消耗贡献 '+item.cost+'，'+autoEquip(Object.assign({},item.equipment,{id:'sect_equipment_'+Date.now()})),'equipment');saveAndDraw()}
+function buySectEquipment(id){const item=gameData.sect.shopEquipmentStock.find(function(x){return x.id===id});if(!item){showMessage('兑换物不存在');return}if(item.sold){showMessage('该装备已兑换');return}if(getSectPositionIndex()<1){showMessage('外门弟子后解锁装备兑换');return}if(getSectEquipmentUpgrade(item.equipment)<=0){showMessage('该装备已不再提供提升');return}if(gameData.sectContribution<item.cost){showMessage('宗门贡献不足');return}gameData.sectContribution-=item.cost;gameData.sect.contribution=gameData.sectContribution;item.sold=true;addAdventureLog('消耗贡献 '+item.cost+'，'+autoEquip(Object.assign({},item.equipment,{id:'sect_equipment_'+Date.now()})),'equipment');saveAndDraw({immediate:true,reason:'equipment'})}
 function getSectTechniqueExchangeOffer(){const positionIndex=getSectPositionIndex(),ranks=getTechniqueRanksForSectPosition(positionIndex);if(!ranks.length)return null;const highRank=ranks[ranks.length-1],lowRank=ranks[0];return {lowRank:lowRank,highRank:highRank,cost:SECT_EQUIPMENT_COSTS[highRank]||100}}
 function performTechniqueExchange(offer){const ranks=getTechniqueRanksForSectPosition(getSectPositionIndex()),highChance=Math.min(.75,.15+gameData.sect.sectFavor/10000),rank=ranks.length>1&&Math.random()>=highChance?ranks[0]:ranks[ranks.length-1];gameData.sectContribution-=offer.cost;gameData.sect.contribution=gameData.sectContribution;const element=gameData.spiritRoots[Math.floor(Math.random()*gameData.spiritRoots.length)];offerTechnique(getRandomTechnique(element,rank));saveGame()}
 function exchangeTechnique(){const positionIndex=getSectPositionIndex();if(positionIndex<2){showMessage('内门弟子后解锁功法兑换');return}const offer=getSectTechniqueExchangeOffer();if(!offer){showMessage('当前没有可兑换功法');return}if(gameData.sectContribution<offer.cost){showMessage('宗门贡献不足，本次需要 '+offer.cost+' 点');return}platform.showModal({title:'确认抽取功法',content:'本次抽取消耗：'+offer.cost+'贡献\n当前贡献：'+gameData.sectContribution+'\n\n可能获得：'+offer.lowRank+'下品 - '+offer.highRank+'上品功法',confirmText:'确认抽取',cancelText:'取消',success:function(res){if(res.confirm)performTechniqueExchange(offer)}})}
@@ -2270,6 +2306,8 @@ function getRandomRankByWeights(dropRankWeights) {
 
 // 新装备只会在同部位更强时替换，较弱装备会自动分解为灵石。
 function autoEquip(equipment) {
+  // 装备获得是关键进度，等当前事件把日志等字段写完后立即触发一次云同步。
+  window.setTimeout(function () { saveGame({ immediate:true, reason:'equipment' }) }, 0)
   const rankIndex = EQUIPMENT_RANKS.findIndex(function (rank) { return rank.name === equipment.rank })
   gameData.runStats.highestEquipmentRankIndex = Math.max(gameData.runStats.highestEquipmentRankIndex, rankIndex)
   updateRunTaskProgress('equipment_rank', rankIndex)
@@ -2507,12 +2545,12 @@ function selectInheritedSpecialTalent(id) {
     return
   }
   gameData.selectedInheritedSpecialTalentId = id
-  saveAndDraw()
+  saveAndDraw({ immediate:true, reason:'talent' })
 }
 
 function clearInheritedSpecialTalent() {
   gameData.selectedInheritedSpecialTalentId = null
-  saveAndDraw()
+  saveAndDraw({ immediate:true, reason:'talent' })
 }
 
 // 轮回页唯一入口：这里只确认进入“准备阶段”，绝不扣点或重置本世数据。
@@ -2724,7 +2762,7 @@ function beginPreparedRebirth(preparation, selectedNewSpecialTalent) {
   gameData.adventureLogs = []
   gameData.adventureLog = ''
   addAdventureLog(resultText)
-  saveAndDraw()
+  saveAndDraw({ immediate:true, reason:'rebirth' })
   platform.showModal({ title: '轮回完成', content: resultText, showCancel: false })
 }
 
@@ -2772,7 +2810,7 @@ function breakthrough() {
       ? '突破失败，逆天改命保留了50%当前修为，并进入重伤状态。'
       : '突破失败，当前修为已全部清空，并进入重伤状态。'
     addAdventureLog(failureText)
-    saveAndDraw()
+    saveAndDraw({ immediate:true, reason:'breakthrough' })
     platform.showModal({
       title: '突破失败',
       content: failureText,
@@ -2832,7 +2870,7 @@ function breakthrough() {
   updateRunTaskProgress('reach_realm', 1)
   updateRunTaskProgress('challenge', 1)
   checkAchievements()
-  saveAndDraw()
+  saveAndDraw({ immediate:true, reason:'breakthrough' })
   const finalRealm=REALMS[gameData.realmIndex]
   if(!showStoryDialog({image:GAME_IMAGES.backgrounds.cultivate,imageMode:'cover',title:'破境成功',unlockKey:'breakthrough_'+finalRealm.name,text:'灵气汇聚，经脉轰鸣。\n\n你成功突破至【'+finalRealm.name+'】！\n修炼速度与战斗力随之大涨。'+(unlockText?'\n\n新系统解锁：'+unlockText:''),buttons:[{text:'继续修行',action:function(){drawGame()}}]}))showMessage('突破到了' + finalRealm.name)
 }
@@ -3052,8 +3090,8 @@ function getTechniqueRanksForSectPosition(index){if(index>=7)return ['天阶'];i
 function offerTechnique(technique){
   gameData.discoveredTechniques[technique.name]=true
   const elder=getTechniqueStoryCharacter(technique.element)
-  const accept=function(){if(gameData.currentTechnique)gameData.techniqueCollection.push(gameData.currentTechnique);gameData.currentTechnique=technique;gameData.skillLevel=technique.level;gameData.clickPower=getClickPowerBySkillLevel(technique.level);addAdventureLog('你接受传承，开始修炼【'+technique.name+'】。','talent');saveAndDraw()}
-  const collect=function(){gameData.techniqueCollection.push(technique);addAdventureLog('你将【'+technique.name+'】收入功法收藏。','talent');saveAndDraw()}
+  const accept=function(){if(gameData.currentTechnique)gameData.techniqueCollection.push(gameData.currentTechnique);gameData.currentTechnique=technique;gameData.skillLevel=technique.level;gameData.clickPower=getClickPowerBySkillLevel(technique.level);addAdventureLog('你接受传承，开始修炼【'+technique.name+'】。','talent');saveAndDraw({immediate:true,reason:'technique'})}
+  const collect=function(){gameData.techniqueCollection.push(technique);addAdventureLog('你将【'+technique.name+'】收入功法收藏。','talent');saveAndDraw({immediate:true,reason:'technique'})}
   const storyText='“你的灵根资质不错，但修行之路漫长。\n\n此《'+technique.name+'》乃本峰传承，今日赐予你，望你勤加修炼。”\n\n获得：'+technique.rank+getTechniqueQualityName(technique.quality)+' · '+technique.name
   if(showStoryDialog({image:elder.image,title:elder.title,unlockKey:'technique_gift_'+technique.name,text:storyText,buttons:[{text:'接受传承',action:accept},{text:'收入收藏',color:'#737a70',action:collect}]}))return
   platform.showModal({title:'宗门赐予功法',content:'获得：'+getTechniqueDisplayText(technique)+'\n\n是否替换当前功法？',confirmText:'修炼此法',cancelText:'收入收藏',success:function(res){if(res.confirm)accept();else collect()}})
@@ -3113,10 +3151,10 @@ function hasNextLifeBlessing(id){return gameData.nextLifePreparation.blessingIds
 function getSpecialTalentChoiceCost(count){return count===2?2:count===3?5:count===5?10:0}
 function getNextLifePreparationCost(){const p=gameData.nextLifePreparation;const bg=REBIRTH_BACKGROUNDS.find(x=>x.id===p.backgroundId)||REBIRTH_BACKGROUNDS[0];let cost=bg.cost+getSpecialTalentChoiceCost(p.specialTalentChoiceCount)+(p.lockedRegularTalentType?3:0)+(p.extraInheritedSpecialTalentId?15:0);p.blessingIds.forEach(id=>{const b=REBIRTH_BLESSINGS.find(x=>x.id===id);if(b)cost+=b.cost});const d=DESTINY_EVENTS.find(x=>x.id===p.destinyEventId);return cost+(d?d.cost:0)}
 function generateSpecialTalentChoices(count, excludeIds){const pool=SPECIAL_TALENTS.filter(t=>excludeIds.indexOf(t.id)===-1);const out=[];while(out.length<count&&pool.length){out.push(pool.splice(Math.floor(Math.random()*pool.length),1)[0])}return out}
-function toggleNextLifeBlessing(id){const p=gameData.nextLifePreparation;const i=p.blessingIds.indexOf(id);if(i>=0)p.blessingIds.splice(i,1);else if(p.blessingIds.length>=2)showMessage('最多选择2个开局祝福');else p.blessingIds.push(id);saveAndDraw()}
-function setNextLifeBackground(id){if(REBIRTH_BACKGROUNDS.some(x=>x.id===id)){gameData.nextLifePreparation.backgroundId=id;saveAndDraw()}}
-function toggleLockedRegularTalentType(type){const p=gameData.nextLifePreparation;p.lockedRegularTalentType=p.lockedRegularTalentType===type?null:type;saveAndDraw()}
-function setSpecialTalentChoiceCount(count){if([1,2,3,5].indexOf(count)>=0){gameData.nextLifePreparation.specialTalentChoiceCount=count;saveAndDraw()}}
+function toggleNextLifeBlessing(id){const p=gameData.nextLifePreparation;const i=p.blessingIds.indexOf(id);if(i>=0)p.blessingIds.splice(i,1);else if(p.blessingIds.length>=2)showMessage('最多选择2个开局祝福');else p.blessingIds.push(id);saveAndDraw({immediate:true,reason:'talent'})}
+function setNextLifeBackground(id){if(REBIRTH_BACKGROUNDS.some(x=>x.id===id)){gameData.nextLifePreparation.backgroundId=id;saveAndDraw({immediate:true,reason:'talent'})}}
+function toggleLockedRegularTalentType(type){const p=gameData.nextLifePreparation;p.lockedRegularTalentType=p.lockedRegularTalentType===type?null:type;saveAndDraw({immediate:true,reason:'talent'})}
+function setSpecialTalentChoiceCount(count){if([1,2,3,5].indexOf(count)>=0){gameData.nextLifePreparation.specialTalentChoiceCount=count;saveAndDraw({immediate:true,reason:'talent'})}}
 
 // 所有特殊天赋效果统一通过这个函数判断，避免散落遍历数组。
 function hasSpecialTalent(id) {
@@ -3420,12 +3458,16 @@ function getOfflineAutoCultivationGainPerSecond() {
 function calculateOfflineProgress(isOffline) {
   const result = { offlineSeconds: 0, stoneGain: 0, cultivationGain: 0 }
   const now = Date.now()
-  if (!Number.isFinite(gameData.lastUpdateTime) || gameData.lastUpdateTime <= 0) {
+  const lastOnlineTime = Number(gameData.lastOnlineTime) || gameData.lastUpdateTime
+  if (!Number.isFinite(lastOnlineTime) || lastOnlineTime <= 0) {
     gameData.lastUpdateTime = now
     gameData.lastGuardRewardTime = now
+    gameData.lastOnlineTime = now
     return result
   }
-  let seconds = Math.floor((now - gameData.lastUpdateTime) / 1000)
+  // 离线收益明确以 lastOnlineTime 为锚点；前台循环仍用 lastUpdateTime 补齐卡顿秒数。
+  const startTime = isOffline ? lastOnlineTime : gameData.lastUpdateTime
+  let seconds = Math.floor((now - startTime) / 1000)
   if (seconds <= 0) return result
   // 离开页面时遵守洞府的离线收益上限；前台偶发卡顿则按真实时间完整补算。
   if (isOffline) seconds = Math.min(seconds, getOfflineGuardLimitSeconds())
@@ -3451,6 +3493,7 @@ function calculateOfflineProgress(isOffline) {
   if (cultivationGain > 0) gameData.cultivation += cultivationGain
   gameData.lastUpdateTime = now
   gameData.lastGuardRewardTime = now
+  gameData.lastOnlineTime = now
   result.offlineSeconds = seconds
   result.stoneGain = stoneGain
   result.cultivationGain = cultivationGain
@@ -3601,18 +3644,31 @@ function addAdventureLog(text, type) {
 
 // 本地存档。Object.assign 会把读取到的字段覆盖到默认数据上，
 // 即使以后增加新字段，旧存档也仍然可以继续使用。
-function saveGame() {
+function saveGame(options) {
   updateHighestCombatPower()
   // GM测试数据仅保留在内存中，绝不覆盖玩家的正常本地存档。
   if (DEBUG_MODE && gmSessionActive) return
+  gameData.lastOnlineTime = Date.now()
+  gameData.updateTimeMs = Date.now()
+  gameData.updateTime = new Date(gameData.updateTimeMs).toISOString()
+  gameData.saveVersion = Math.max(0, Math.floor(Number(gameData.saveVersion) || 0)) + 1
   platform.setStorageSync(SAVE_KEY, gameData)
+  // 云端写入始终在本地成功之后异步执行，网络异常不会影响游戏。
+  if (window.CloudSaveManager) window.CloudSaveManager.saveGameToCloud(gameData, options || {})
 }
 
-function loadGame() {
-  const savedData = platform.getStorageSync(SAVE_KEY)
+function loadGame(cloudSaveData) {
+  const savedData = cloudSaveData || platform.getStorageSync(SAVE_KEY)
   if (savedData) {
     Object.assign(gameData, savedData)
   }
+
+  // 旧本地存档没有云同步元数据时，从既有离线结算时间补齐。
+  gameData.saveVersion = Math.max(1, Math.floor(Number(gameData.saveVersion) || 1))
+  gameData.updateTimeMs = Math.max(0, Number(gameData.updateTimeMs) || 0)
+  if (!gameData.updateTimeMs) gameData.updateTimeMs = Number(gameData.lastUpdateTime) || Date.now()
+  if (typeof gameData.updateTime !== 'string' || !gameData.updateTime) gameData.updateTime = new Date(gameData.updateTimeMs).toISOString()
+  gameData.lastOnlineTime = Math.max(0, Number(gameData.lastOnlineTime) || gameData.lastUpdateTime || Date.now())
 
   // 图片剧情只保存“是否看过”，图片对象本身绝不写入本地存档。
   if (!gameData.unlockedImages || typeof gameData.unlockedImages !== 'object') {
@@ -3936,8 +3992,8 @@ function loadGame() {
   }
 }
 
-function saveAndDraw() {
-  saveGame()
+function saveAndDraw(options) {
+  saveGame(options)
   drawGame()
 }
 

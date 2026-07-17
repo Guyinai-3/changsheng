@@ -331,4 +331,8 @@
       confirmText: '知道了'
     })
   })
+
+  document.getElementById('cloud-save-button').addEventListener('click', function () {
+    if (typeof window.openCloudSavePanel === 'function') window.openCloudSavePanel()
+  })
 })()
