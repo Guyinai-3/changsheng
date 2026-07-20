@@ -83,8 +83,15 @@
       app = cloudbase.init(options)
       if (config().loginMode === 'anonymous') {
         const auth = app.auth()
-        const loginState = await auth.getLoginState()
-        if (!loginState) await auth.anonymousAuthProvider().signIn()
+        try {
+          const loginState = await auth.getLoginState()
+          if (!loginState || !loginState.isAnonymousAuth) await auth.anonymousAuthProvider().signIn()
+        } catch (error) {
+          // SDK 升级、环境切换或匿名身份失效时，旧 refresh token 会被服务端拒绝。
+          // 清掉旧会话后重新匿名登录，不能让失效缓存永久阻塞游戏启动。
+          try { await auth.signOut() } catch (signOutError) {}
+          await auth.anonymousAuthProvider().signIn()
+        }
       }
       db = app.database()
       emitStatus({ state: 'ready', message: '云存档已连接' })

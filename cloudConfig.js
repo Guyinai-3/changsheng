@@ -6,7 +6,7 @@ window.CLOUD_SAVE_CONFIG = {
   accessKey: '',
   collection: 'game_save',
   loginMode: 'anonymous',
-  // 腾讯 CloudBase 提供的单文件浏览器 SDK；避免 ESM 依赖链过长造成首屏云同步一直连接中。
-  sdkUrl: 'https://imgcache.qq.com/qcloud/tcbjs/1.6.0/tcb.js',
+  // 由 tools/cloudbase-browser-entry.js 打包的当前 SDK：静态网站只加载一个本地文件。
+  sdkUrl: 'vendor/cloudbase-sdk.js',
   sdkMode: 'script'
 }
