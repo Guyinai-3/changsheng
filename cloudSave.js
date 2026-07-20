@@ -70,6 +70,22 @@
       .catch(function () { throw new Error('CloudBase SDK 加载失败') })
   }
 
+  // CloudBase Web SDK 的部分构建版本没有把 signInAnonymously 暴露到 Auth 原型上，
+  // 但底层认证模块仍提供同一能力。优先走公开接口，必要时再使用兼容入口。
+  async function signInAnonymously (auth) {
+    if (typeof auth.signInAnonymously === 'function') {
+      const result = await auth.signInAnonymously()
+      if (result && result.error) throw result.error
+      return
+    }
+    const authApi = auth && auth.oauthInstance && auth.oauthInstance.authApi
+    if (!authApi || typeof authApi.signInAnonymously !== 'function') {
+      throw new Error('当前 CloudBase SDK 不支持匿名登录')
+    }
+    await authApi.signInAnonymously({})
+    if (typeof auth.createLoginState === 'function') await auth.createLoginState()
+  }
+
   async function initialize () {
     getUserId()
     if (!enabled()) return null
@@ -83,15 +99,9 @@
       app = cloudbase.init(options)
       if (config().loginMode === 'anonymous') {
         const auth = app.auth()
-        try {
-          const loginState = await auth.getLoginState()
-          if (!loginState || !loginState.isAnonymousAuth) await auth.anonymousAuthProvider().signIn()
-        } catch (error) {
-          // SDK 升级、环境切换或匿名身份失效时，旧 refresh token 会被服务端拒绝。
-          // 清掉旧会话后重新匿名登录，不能让失效缓存永久阻塞游戏启动。
-          try { await auth.signOut() } catch (signOutError) {}
-          await auth.anonymousAuthProvider().signIn()
-        }
+        const loginState = await auth.getLoginState()
+        // 没有有效会话时创建游客登录；已有会话则复用，避免每次打开游戏都生成新身份。
+        if (!loginState) await signInAnonymously(auth)
       }
       db = app.database()
       emitStatus({ state: 'ready', message: '云存档已连接' })
