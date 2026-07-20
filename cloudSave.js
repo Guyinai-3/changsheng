@@ -120,6 +120,13 @@
     return Array.isArray(data) ? data[0] : data
   }
 
+  // CloudBase 某些数据库错误会作为返回值而非异常抛出；必须转换成失败，
+  // 否则界面会误把“集合不存在”等错误显示为同步成功。
+  function assertDatabaseResult (result) {
+    if (!result || !result.code || result.code === 'OK' || result.code === 0) return result
+    throw new Error(result.message || String(result.code))
+  }
+
   async function loadGameFromCloud (localSave) {
     getUserId()
     if (!enabled()) return { source: 'local', reason: 'disabled' }
@@ -162,7 +169,7 @@
       updateTime: updateTime,
       updateTimeMs: updateTimeMs
     }
-    await documentRef().set(record)
+    assertDatabaseResult(await documentRef().set(record))
     lastCloudSaveAt = Date.now()
     emitStatus({ state: 'synced', message: options && options.reason === 'manual' ? '已保存到云端' : '云存档已同步', lastSavedAt: updateTimeMs, createTime: record.createTime })
     return true
@@ -210,7 +217,7 @@
   async function deleteCloudSave () {
     if (!enabled()) throw new Error('请先在 cloudConfig.js 填写 CloudBase 环境 ID')
     await initialize()
-    await documentRef().remove()
+    assertDatabaseResult(await documentRef().remove())
     emitStatus({ state: 'ready', message: '云存档已删除', lastSavedAt: 0 })
   }
 
