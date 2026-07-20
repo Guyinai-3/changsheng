@@ -183,6 +183,21 @@
     .cloud-actions .danger { background: #8b3a3a; }
     .cloud-actions .wide { grid-column: 1 / -1; background: #737a70; }
 
+    #account-panel[hidden], #legacy-migration-panel[hidden] { display: none; }
+    #account-panel, #legacy-migration-panel { position: fixed; inset: 0; z-index: 1200; display: flex; align-items: center; justify-content: center; padding: 22px; background: rgba(10, 14, 11, .78); }
+    .account-card { width: min(92vw, 390px); padding: 22px; color: #423d35; background: #fffdf7; border: 1px solid #d8cebb; border-radius: 14px; box-shadow: 0 20px 70px rgba(0,0,0,.42); }
+    .account-card h2 { margin: 0 0 8px; color: #7b3e25; text-align: center; font-size: 21px; }
+    .account-card p { margin: 0 0 16px; color: #736b5d; font-size: 13px; line-height: 1.6; }
+    .account-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 14px 0; }
+    .account-tabs button, .account-submit, .account-secondary { padding: 10px; border: 0; border-radius: 8px; font: inherit; cursor: pointer; }
+    .account-tabs button { color: #6a6258; background: #ece4d6; }
+    .account-tabs button.active, .account-submit { color: #fff; background: #526d5b; }
+    .account-form { display: grid; gap: 10px; }
+    .account-form[hidden] { display: none; }
+    .account-form input { width: 100%; box-sizing: border-box; padding: 11px; border: 1px solid #d8cebb; border-radius: 8px; color: #423d35; background: #fff; font: inherit; }
+    .account-error { min-height: 20px; margin: 8px 0 0; color: #a63737; font-size: 13px; text-align: center; }
+    .account-secondary { width: 100%; margin-top: 9px; color: #fff; background: #737a70; }
+
     #toast {
       position: fixed;
       left: 50%;
@@ -260,10 +275,42 @@
       <div class="cloud-actions">
         <button id="cloud-save-now" type="button">立即保存</button>
         <button id="cloud-reload-save" type="button">重新加载云存档</button>
-        <button id="cloud-switch-account" type="button">切换账号</button>
-        <button id="cloud-delete-save" class="danger" type="button">删除云存档</button>
+        <button id="cloud-logout" class="danger wide" type="button">退出账号</button>
         <button id="cloud-save-close" class="wide" type="button">关闭</button>
       </div>
+    </div>
+  </section>
+
+  <section id="account-panel" hidden aria-label="账号登录">
+    <div class="account-card">
+      <h2>问道长生</h2>
+      <p>登录账号后，云端存档会跟随账号在不同浏览器间同步。</p>
+      <div class="account-tabs">
+        <button id="account-tab-login" class="active" type="button">登录</button>
+        <button id="account-tab-register" type="button">注册</button>
+      </div>
+      <form id="account-login-form" class="account-form">
+        <input id="login-username" autocomplete="username" maxlength="24" placeholder="账号" required>
+        <input id="login-password" type="password" autocomplete="current-password" maxlength="128" placeholder="密码" required>
+        <button class="account-submit" type="submit">登录并进入游戏</button>
+      </form>
+      <form id="account-register-form" class="account-form" hidden>
+        <input id="register-username" autocomplete="username" maxlength="24" placeholder="账号（3-24位字母、数字或下划线）" required>
+        <input id="register-password" type="password" autocomplete="new-password" maxlength="128" placeholder="密码（至少6位）" required>
+        <input id="register-password-confirm" type="password" autocomplete="new-password" maxlength="128" placeholder="确认密码" required>
+        <button class="account-submit" type="submit">注册并进入游戏</button>
+      </form>
+      <div id="account-error" class="account-error" role="alert"></div>
+    </div>
+  </section>
+
+  <section id="legacy-migration-panel" hidden aria-label="游客存档迁移">
+    <div class="account-card">
+      <h2>发现本地游客存档</h2>
+      <p>可将此浏览器中的旧进度绑定到当前账号。迁移后，当前账号的云端存档将使用这份进度。</p>
+      <button id="legacy-migrate-button" class="account-submit" type="button">绑定并上传旧存档</button>
+      <button id="legacy-skip-button" class="account-secondary" type="button">暂不迁移，使用账号云存档</button>
+      <div id="legacy-error" class="account-error" role="alert"></div>
     </div>
   </section>
 

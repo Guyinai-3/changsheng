@@ -113,6 +113,29 @@ const DEBUG_MODE = true
 
 GM 会话开启后不会继续写入正式存档，也不会记录永久成就。刷新或重新打开游戏即可恢复进入 GM 前的正常存档。
 
+## 账号密码云存档部署
+
+账号密码不在网页或浏览器中校验。网页只保存 `currentUser`（`userId`、`username`）和登录会话令牌；所有注册、登录、密码哈希、账号查询和存档读写均由 `gameAccount` 云函数处理。
+
+1. 在 CloudBase 云函数中创建并部署 `cloudfunctions/gameAccount/`，函数名必须为 `gameAccount`。
+2. 在该函数的环境变量中新建 `SESSION_SECRET`，填入随机生成的至少 32 字符字符串；不要把此值提交到 GitHub 或写入前端文件。
+3. 创建 `users` 集合及 `game_save` 集合，并将两个集合的权限改为“仅管理员可读写”。云函数使用管理员 SDK 访问它们，浏览器没有直接数据库权限。
+4. 重新部署静态网站。首次访问会显示注册/登录页；旧版游客本地存档会在登录后提示绑定迁移。
+
+`users` 文档字段：
+
+```json
+{
+  "userId": "user_xxx",
+  "username": "playername",
+  "passwordHash": "pbkdf2$sha256$...",
+  "createTime": "2026-07-20T00:00:00.000Z",
+  "lastLoginTime": "2026-07-20T00:00:00.000Z"
+}
+```
+
+`game_save` 以 `userId` 作为文档 ID；一个账号只有一条完整游戏快照。普通挂机最多每 60 秒同步一次，突破、轮回、装备、功法与宗门变化仍会立即保存。
+
 正式发布前务必改为：
 
 ```js

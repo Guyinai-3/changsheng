@@ -1,77 +1,67 @@
-// 云存档适配层：游戏仍只在浏览器运行；这里负责把本地快照异步同步到 CloudBase。
+// 账号与云存档适配层：浏览器只保留登录态和本地兜底快照，
+// 密码校验、账号查询、存档读写全部交给 CloudBase 云函数执行。
 (function () {
   'use strict'
 
-  const USER_ID_KEY = 'userId'
-  const FORCE_CLOUD_LOAD_KEY = 'xiuxian_cloud_force_load'
-  const LOCAL_GAME_SAVE_KEY = 'xiuxian_html5_xiuxian_game_save'
-  const DEFAULT_COLLECTION = 'game_save'
+  const CURRENT_USER_KEY = 'currentUser'
+  const SESSION_KEY = 'xiuxian_account_session'
+  const LEGACY_SAVE_KEY = 'xiuxian_html5_xiuxian_game_save'
+  const LEGACY_BACKUP_KEY = 'xiuxian_legacy_guest_save_backup'
   const SYNC_INTERVAL = 60 * 1000
   let app = null
-  let db = null
   let readyPromise = null
+  let loginPromise = null
   let pendingData = null
   let pendingOptions = null
+  let pendingLegacySave = null
   let saveTimer = null
   let saveInFlight = false
   let lastCloudSaveAt = 0
-  let status = { state: 'local', message: '仅本地存档', lastSavedAt: 0 }
+  let status = { state: 'login', message: '请登录账号后开始游戏', lastSavedAt: 0 }
 
   function config () { return window.CLOUD_SAVE_CONFIG || {} }
-  function enabled () {
-    const env = String(config().environmentId || '')
-    return !!env && env !== '请填写你的CloudBase环境ID'
-  }
+  function enabled () { return !!String(config().environmentId || '') }
   function clone (value) { return JSON.parse(JSON.stringify(value)) }
   function isoToMs (value) { const ms = new Date(value || 0).getTime(); return Number.isFinite(ms) ? ms : 0 }
 
-  function getUserId () {
-    let userId = ''
-    try { userId = window.localStorage.getItem(USER_ID_KEY) || '' } catch (error) {}
-    if (!/^player_[a-z0-9]{8,}$/i.test(userId)) {
-      const bytes = new Uint32Array(2)
-      if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes)
-      else { bytes[0] = Date.now(); bytes[1] = Math.random() * 0xffffffff }
-      userId = 'player_' + Array.prototype.map.call(bytes, function (item) { return item.toString(36) }).join('').slice(0, 12)
-      try { window.localStorage.setItem(USER_ID_KEY, userId) } catch (error) {}
-    }
-    return userId
+  function readJson (key) {
+    try { return JSON.parse(window.localStorage.getItem(key) || 'null') } catch (error) { return null }
   }
-
-  function switchUserId (nextUserId) {
-    const userId = String(nextUserId || '').trim()
-    if (!/^player_[a-z0-9]{8,}$/i.test(userId)) throw new Error('账号格式应为 player_ 后接至少 8 位字母或数字')
-    window.localStorage.setItem(USER_ID_KEY, userId)
-    // 切换设备账号时必须优先使用云端，不能让新浏览器的空白本地档反向覆盖云端。
-    window.localStorage.setItem(FORCE_CLOUD_LOAD_KEY, '1')
-    window.localStorage.removeItem(LOCAL_GAME_SAVE_KEY)
-    window.location.reload()
+  function getCurrentUser () {
+    const user = readJson(CURRENT_USER_KEY)
+    return user && typeof user.userId === 'string' && typeof user.username === 'string' ? user : null
   }
+  function getSessionToken () {
+    try { return window.localStorage.getItem(SESSION_KEY) || '' } catch (error) { return '' }
+  }
+  function isLoggedIn () { return !!getCurrentUser() && !!getSessionToken() }
+  function hasLegacySave () {
+    try { return !!(window.localStorage.getItem(LEGACY_BACKUP_KEY) || window.localStorage.getItem(LEGACY_SAVE_KEY)) } catch (error) { return false }
+  }
+  function getLegacySave () { return readJson(LEGACY_BACKUP_KEY) || readJson(LEGACY_SAVE_KEY) }
 
   function emitStatus (next) {
     status = Object.assign({}, status, next)
     window.dispatchEvent(new CustomEvent('cloudsave:status', { detail: getStatus() }))
   }
-  function getStatus () { return Object.assign({ userId: getUserId(), enabled: enabled() }, status) }
+  function getStatus () {
+    const user = getCurrentUser()
+    return Object.assign({ userId: user ? user.userId : '', username: user ? user.username : '', enabled: enabled(), loggedIn: isLoggedIn() }, status)
+  }
 
   function loadSdk () {
     if (window.cloudbase || window.CloudBase || window.tcb) return Promise.resolve(window.cloudbase || window.CloudBase || window.tcb)
-    if (config().sdkMode === 'script') {
-      return new Promise(function (resolve, reject) {
-        const script = document.createElement('script')
-        script.src = config().sdkUrl
-        script.async = true
-        script.onload = function () { resolve(window.cloudbase || window.CloudBase || window.tcb) }
-        script.onerror = function () { reject(new Error('CloudBase SDK 加载失败')) }
-        document.head.appendChild(script)
-      })
-    }
-    return import(config().sdkUrl).then(function (module) { return module.default || module.cloudbase || module })
-      .catch(function () { throw new Error('CloudBase SDK 加载失败') })
+    return new Promise(function (resolve, reject) {
+      const script = document.createElement('script')
+      script.src = config().sdkUrl
+      script.async = true
+      script.onload = function () { resolve(window.cloudbase || window.CloudBase || window.tcb) }
+      script.onerror = function () { reject(new Error('CloudBase SDK 加载失败')) }
+      document.head.appendChild(script)
+    })
   }
 
-  // CloudBase Web SDK 的部分构建版本没有把 signInAnonymously 暴露到 Auth 原型上，
-  // 但底层认证模块仍提供同一能力。优先走公开接口，必要时再使用兼容入口。
+  // 云函数调用仍使用 CloudBase 的匿名访问凭证，但它不再代表游戏账号。
   async function signInAnonymously (auth) {
     if (typeof auth.signInAnonymously === 'function') {
       const result = await auth.signInAnonymously()
@@ -79,178 +69,237 @@
       return
     }
     const authApi = auth && auth.oauthInstance && auth.oauthInstance.authApi
-    if (!authApi || typeof authApi.signInAnonymously !== 'function') {
-      throw new Error('当前 CloudBase SDK 不支持匿名登录')
-    }
+    if (!authApi || typeof authApi.signInAnonymously !== 'function') throw new Error('当前 CloudBase SDK 不支持匿名访问凭证')
     await authApi.signInAnonymously({})
     if (typeof auth.createLoginState === 'function') await auth.createLoginState()
   }
 
   async function initialize () {
-    getUserId()
-    if (!enabled()) return null
+    if (!enabled()) throw new Error('CloudBase 环境未配置')
     if (readyPromise) return readyPromise
     readyPromise = (async function () {
-      emitStatus({ state: 'connecting', message: '正在连接云存档' })
       const cloudbase = await loadSdk()
       if (!cloudbase || typeof cloudbase.init !== 'function') throw new Error('CloudBase SDK 初始化失败')
-      const options = { env: config().environmentId, region: config().region || 'ap-shanghai' }
-      if (config().accessKey) options.accessKey = config().accessKey
-      app = cloudbase.init(options)
-      if (config().loginMode === 'anonymous') {
-        const auth = app.auth()
-        const loginState = await auth.getLoginState()
-        // 没有有效会话时创建游客登录；已有会话则复用，避免每次打开游戏都生成新身份。
-        if (!loginState) await signInAnonymously(auth)
-      }
-      db = app.database()
-      emitStatus({ state: 'ready', message: '云存档已连接' })
-      return db
-    })().catch(function (error) {
-      readyPromise = null
-      emitStatus({ state: 'error', message: '云同步不可用：' + (error.message || '连接失败') })
-      throw error
-    })
+      app = cloudbase.init({ env: config().environmentId, region: config().region || 'ap-shanghai' })
+      const auth = app.auth()
+      if (!await auth.getLoginState()) await signInAnonymously(auth)
+      return app
+    })().catch(function (error) { readyPromise = null; throw error })
     return readyPromise
   }
 
-  function documentRef () { return db.collection(config().collection || DEFAULT_COLLECTION).doc(getUserId()) }
-  function extractData (result) {
-    const data = result && result.data
-    return Array.isArray(data) ? data[0] : data
+  async function callAccountFunction (action, payload, requiresSession) {
+    await initialize()
+    const data = Object.assign({ action: action }, payload || {})
+    if (requiresSession !== false) data.sessionToken = getSessionToken()
+    const response = await app.callFunction({ name: config().accountFunctionName || 'gameAccount', data: data })
+    const result = response && response.result
+    if (!result || result.ok !== true) throw new Error((result && result.error) || '云端服务暂时不可用')
+    return result
   }
 
-  // CloudBase 某些数据库错误会作为返回值而非异常抛出；必须转换成失败，
-  // 否则界面会误把“集合不存在”等错误显示为同步成功。
-  function assertDatabaseResult (result) {
-    if (!result || !result.code || result.code === 'OK' || result.code === 0) return result
-    throw new Error(result.message || String(result.code))
+  function saveLogin (result) {
+    const user = result && result.currentUser
+    if (!user || !user.userId || !user.username || !result.sessionToken) throw new Error('登录状态无效')
+    window.localStorage.setItem(CURRENT_USER_KEY, JSON.stringify({ userId: user.userId, username: user.username }))
+    window.localStorage.setItem(SESSION_KEY, result.sessionToken)
+    emitStatus({ state: 'ready', message: '账号已登录，正在读取云存档', lastSavedAt: 0 })
   }
 
-  async function loadGameFromCloud (localSave) {
-    getUserId()
-    if (!enabled()) return { source: 'local', reason: 'disabled' }
+  function showPanel (id, show) {
+    const panel = document.getElementById(id)
+    if (panel) panel.hidden = !show
+  }
+  function setError (id, message) {
+    const el = document.getElementById(id)
+    if (el) el.textContent = message || ''
+  }
+  function normalizeUsername (value) { return String(value || '').trim().toLowerCase() }
+  function validateUsername (username) {
+    if (!/^[a-z0-9_]{3,24}$/i.test(username)) throw new Error('账号需为 3-24 位字母、数字或下划线')
+  }
+  function validatePassword (password) {
+    if (String(password || '').length < 6) throw new Error('密码长度至少 6 位')
+  }
+
+  async function login (username, password) {
+    username = normalizeUsername(username)
+    validateUsername(username); validatePassword(password)
+    const result = await callAccountFunction('login', { username: username, password: String(password || '') }, false)
+    saveLogin(result)
+    return result
+  }
+  async function register (username, password) {
+    username = normalizeUsername(username)
+    validateUsername(username); validatePassword(password)
+    const result = await callAccountFunction('register', { username: username, password: String(password || '') }, false)
+    saveLogin(result)
+    return result
+  }
+
+  async function waitForLogin (legacySave) {
+    if (legacySave && typeof legacySave === 'object') pendingLegacySave = clone(legacySave)
+    if (isLoggedIn()) {
+      emitStatus({ state: 'ready', message: '账号已登录，正在读取云存档' })
+      return resolveMigration()
+    }
+    if (loginPromise) return loginPromise
+    loginPromise = new Promise(function (resolve) {
+      window.__resolveAccountLogin = resolve
+      showPanel('account-panel', true)
+    })
+    return loginPromise.then(resolveMigration)
+  }
+
+  async function resolveMigration () {
+    if (!pendingLegacySave || !Object.keys(pendingLegacySave).length) return getCurrentUser()
+    return new Promise(function (resolve) {
+      window.__resolveLegacyMigration = resolve
+      setError('legacy-error', '')
+      showPanel('legacy-migration-panel', true)
+    })
+  }
+
+  async function migrateLegacySave () {
+    if (!pendingLegacySave) return
+    const result = await callAccountFunction('migrateSave', { saveData: clone(pendingLegacySave) })
+    lastCloudSaveAt = Date.now()
+    emitStatus({ state: 'synced', message: '游客存档已绑定到当前账号', lastSavedAt: Number(result.updateTimeMs) || Date.now() })
+    try { window.localStorage.removeItem(LEGACY_BACKUP_KEY); window.localStorage.removeItem(LEGACY_SAVE_KEY) } catch (error) {}
+    pendingLegacySave = null
+  }
+
+  async function loadGameFromCloud () {
+    if (!isLoggedIn()) return { source: 'local', reason: 'notLoggedIn' }
     try {
-      await initialize()
-      const cloudRecord = extractData(await documentRef().get())
-      if (!cloudRecord || !cloudRecord.saveData) {
+      const result = await callAccountFunction('loadSave')
+      const record = result.save || null
+      if (!record || !record.saveData) {
         emitStatus({ state: 'ready', message: '云端暂无存档，将创建新存档' })
         return { source: 'local', shouldUpload: true }
       }
-      const forceCloudLoad = window.localStorage.getItem(FORCE_CLOUD_LOAD_KEY) === '1'
-      if (forceCloudLoad) window.localStorage.removeItem(FORCE_CLOUD_LOAD_KEY)
-      const cloudTime = Number(cloudRecord.updateTimeMs) || isoToMs(cloudRecord.updateTime)
-      const localTime = Number(localSave && localSave.updateTimeMs) || isoToMs(localSave && localSave.updateTime)
-      if (forceCloudLoad || cloudTime > localTime) {
-        emitStatus({ state: 'synced', message: '已载入云存档', lastSavedAt: cloudTime })
-        return { source: 'cloud', saveData: cloudRecord.saveData }
-      }
-      emitStatus({ state: 'synced', message: '本地存档较新，已准备同步', lastSavedAt: cloudTime })
-      return { source: 'local', shouldUpload: true }
+      const savedAt = Number(record.updateTimeMs) || isoToMs(record.updateTime)
+      emitStatus({ state: 'synced', message: '已载入云存档', lastSavedAt: savedAt })
+      // 登录账号后云端是唯一权威来源，避免另一账号留下的本地快照覆盖云端。
+      return { source: 'cloud', saveData: record.saveData }
     } catch (error) {
-      // 云端异常绝不阻断本地游戏。
-      emitStatus({ state: 'error', message: '云端读取失败，继续使用本地存档' })
+      emitStatus({ state: 'error', message: '云端读取失败，继续使用本地缓存' })
       return { source: 'local', error: error }
     }
   }
 
   async function upload (data, options) {
-    if (!enabled()) return false
-    await initialize()
-    const now = new Date()
+    if (!isLoggedIn()) return false
     const saveData = clone(data)
-    const updateTime = saveData.updateTime || now.toISOString()
-    const updateTimeMs = Number(saveData.updateTimeMs) || isoToMs(updateTime) || now.getTime()
-    const record = {
-      userId: getUserId(),
-      saveData: saveData,
-      saveVersion: Math.max(1, Number(saveData.saveVersion) || 1),
-      createTime: status.createTime || now.toISOString(),
-      updateTime: updateTime,
-      updateTimeMs: updateTimeMs
-    }
-    assertDatabaseResult(await documentRef().set(record))
+    const result = await callAccountFunction('saveSave', { saveData: saveData })
+    const savedAt = Number(result.updateTimeMs) || Number(saveData.updateTimeMs) || Date.now()
     lastCloudSaveAt = Date.now()
-    emitStatus({ state: 'synced', message: options && options.reason === 'manual' ? '已保存到云端' : '云存档已同步', lastSavedAt: updateTimeMs, createTime: record.createTime })
+    emitStatus({ state: 'synced', message: options && options.reason === 'manual' ? '已保存到云端' : '云存档已同步', lastSavedAt: savedAt })
     return true
   }
 
   async function flush () {
-    if (saveInFlight || !pendingData) return
+    if (saveInFlight || !pendingData) return false
     saveInFlight = true
     const data = pendingData
     const options = pendingOptions || {}
-    pendingData = null
-    pendingOptions = null
-    try {
-      await upload(data, options)
-    } catch (error) {
+    pendingData = null; pendingOptions = null
+    try { return await upload(data, options) } catch (error) {
       emitStatus({ state: 'error', message: '云同步失败，当前进度仍保存在本地' })
-      if (options.manual) window.platform && window.platform.showToast({ title: '云同步失败\n当前进度仍保存在本地' })
+      if (options.manual && window.platform) window.platform.showToast({ title: '云同步失败\n当前进度仍保存在本地' })
+      return false
     } finally {
       saveInFlight = false
       if (pendingData) scheduleFlush(pendingOptions || {})
     }
   }
-
   function scheduleFlush (options) {
-    if (!enabled()) return
+    if (!isLoggedIn()) return
     window.clearTimeout(saveTimer)
     const immediate = !!options.immediate || !!options.manual
     const delay = immediate ? 0 : Math.max(0, SYNC_INTERVAL - (Date.now() - lastCloudSaveAt))
     saveTimer = window.setTimeout(flush, delay)
   }
-
   function saveGameToCloud (data, options) {
-    pendingData = data
-    pendingOptions = Object.assign({}, pendingOptions || {}, options || {})
+    if (!isLoggedIn()) return
+    pendingData = data; pendingOptions = Object.assign({}, pendingOptions || {}, options || {})
     scheduleFlush(pendingOptions)
   }
-
   async function saveNow (data) {
-    pendingData = data
-    pendingOptions = { immediate: true, manual: true, reason: 'manual' }
+    pendingData = data; pendingOptions = { immediate: true, manual: true, reason: 'manual' }
     window.clearTimeout(saveTimer)
-    await flush()
+    return flush()
   }
 
-  async function deleteCloudSave () {
-    if (!enabled()) throw new Error('请先在 cloudConfig.js 填写 CloudBase 环境 ID')
-    await initialize()
-    assertDatabaseResult(await documentRef().remove())
-    emitStatus({ state: 'ready', message: '云存档已删除', lastSavedAt: 0 })
+  function logout () {
+    window.clearTimeout(saveTimer)
+    pendingData = null; pendingOptions = null; pendingLegacySave = getLegacySave()
+    window.localStorage.removeItem(CURRENT_USER_KEY)
+    window.localStorage.removeItem(SESSION_KEY)
+    // 不把上一账号的本地缓存展示给下一账号；旧游客备份单独保留用于迁移。
+    window.localStorage.removeItem(LEGACY_SAVE_KEY)
+    emitStatus({ state: 'login', message: '请登录账号后开始游戏', lastSavedAt: 0 })
+    window.location.reload()
   }
 
-  function bindPanel () {
+  function bindUi () {
+    const loginTab = document.getElementById('account-tab-login')
+    const registerTab = document.getElementById('account-tab-register')
+    const loginForm = document.getElementById('account-login-form')
+    const registerForm = document.getElementById('account-register-form')
+    function changeTab (registerMode) {
+      loginTab.classList.toggle('active', !registerMode); registerTab.classList.toggle('active', registerMode)
+      loginForm.hidden = registerMode; registerForm.hidden = !registerMode; setError('account-error', '')
+    }
+    loginTab.addEventListener('click', function () { changeTab(false) })
+    registerTab.addEventListener('click', function () { changeTab(true) })
+    loginForm.addEventListener('submit', async function (event) {
+      event.preventDefault(); setError('account-error', '')
+      try {
+        await login(document.getElementById('login-username').value, document.getElementById('login-password').value)
+        showPanel('account-panel', false)
+        const resolve = window.__resolveAccountLogin; window.__resolveAccountLogin = null; loginPromise = null
+        if (resolve) resolve()
+      } catch (error) { setError('account-error', error.message === '账号或密码错误' ? error.message : (error.message || '登录失败，请稍后重试')) }
+    })
+    registerForm.addEventListener('submit', async function (event) {
+      event.preventDefault(); setError('account-error', '')
+      const password = document.getElementById('register-password').value
+      if (password !== document.getElementById('register-password-confirm').value) { setError('account-error', '两次输入的密码不一致'); return }
+      try {
+        await register(document.getElementById('register-username').value, password)
+        showPanel('account-panel', false)
+        const resolve = window.__resolveAccountLogin; window.__resolveAccountLogin = null; loginPromise = null
+        if (resolve) resolve()
+      } catch (error) { setError('account-error', error.message || '注册失败，请稍后重试') }
+    })
+    document.getElementById('legacy-migrate-button').addEventListener('click', async function () {
+      setError('legacy-error', '')
+      try { await migrateLegacySave(); showPanel('legacy-migration-panel', false); const resolve = window.__resolveLegacyMigration; window.__resolveLegacyMigration = null; if (resolve) resolve() } catch (error) { setError('legacy-error', error.message || '迁移失败，请稍后重试') }
+    })
+    document.getElementById('legacy-skip-button').addEventListener('click', function () {
+      try { window.localStorage.setItem(LEGACY_BACKUP_KEY, JSON.stringify(pendingLegacySave)); window.localStorage.removeItem(LEGACY_SAVE_KEY) } catch (error) {}
+      pendingLegacySave = null; showPanel('legacy-migration-panel', false)
+      const resolve = window.__resolveLegacyMigration; window.__resolveLegacyMigration = null; if (resolve) resolve()
+    })
+
     const panel = document.getElementById('cloud-save-panel')
-    if (!panel) return
     const account = document.getElementById('cloud-account-id')
     const sync = document.getElementById('cloud-sync-state')
     const time = document.getElementById('cloud-last-saved')
     function render () {
       const info = getStatus()
-      account.textContent = info.userId
-      sync.textContent = info.message
+      account.textContent = info.username || '未登录'; sync.textContent = info.message
       time.textContent = info.lastSavedAt ? new Date(info.lastSavedAt).toLocaleString('zh-CN', { hour12: false }) : '尚未保存'
     }
     window.addEventListener('cloudsave:status', render)
     document.getElementById('cloud-save-close').addEventListener('click', function () { panel.hidden = true })
-    document.getElementById('cloud-save-now').addEventListener('click', function () {
-      if (typeof window.getCurrentGameSave === 'function') saveNow(window.getCurrentGameSave())
-    })
-    document.getElementById('cloud-reload-save').addEventListener('click', async function () {
-      if (typeof window.reloadGameFromCloud !== 'function') return
-      try { await window.reloadGameFromCloud() } catch (error) { window.platform.showToast({ title: '云端读取失败，继续使用本地存档' }) }
-    })
-    document.getElementById('cloud-delete-save').addEventListener('click', function () {
-      window.platform.showModal({ title: '删除云存档', content: '只删除云端副本，本机进度不会删除。确定继续吗？', confirmText: '删除云端存档', cancelText: '取消', success: async function (result) { if (!result.confirm) return; try { await deleteCloudSave(); window.platform.showToast({ title: '云存档已删除' }) } catch (error) { window.platform.showToast({ title: '删除云存档失败' }) } } })
-    })
-    document.getElementById('cloud-switch-account').addEventListener('click', function () {
-      window.platform.showModal({ title: '切换云存档账号', content: '在另一台设备输入该设备“账号”栏显示的 player_xxxx。当前浏览器本地缓存会清除，并从云端重新加载。', editable: true, defaultText: '', placeholderText: 'player_xxxxxxxxxxxx', confirmText: '切换并重载', cancelText: '取消', success: function (result) { if (!result.confirm) return; try { switchUserId(result.content) } catch (error) { window.platform.showToast({ title: error.message }) } } })
-    })
+    document.getElementById('cloud-save-now').addEventListener('click', function () { if (window.getCurrentGameSave) saveNow(window.getCurrentGameSave()) })
+    document.getElementById('cloud-reload-save').addEventListener('click', function () { if (window.reloadGameFromCloud) window.reloadGameFromCloud() })
+    document.getElementById('cloud-logout').addEventListener('click', logout)
     window.openCloudSavePanel = function () { render(); panel.hidden = false }
   }
 
-  window.CloudSaveManager = { getUserId: getUserId, getStatus: getStatus, initialize: initialize, loadGameFromCloud: loadGameFromCloud, saveGameToCloud: saveGameToCloud, saveNow: saveNow, deleteCloudSave: deleteCloudSave, switchUserId: switchUserId }
-  document.addEventListener('DOMContentLoaded', bindPanel)
+  window.CloudSaveManager = { getStatus: getStatus, getCurrentUser: getCurrentUser, isLoggedIn: isLoggedIn, initialize: initialize, waitForLogin: waitForLogin, loadGameFromCloud: loadGameFromCloud, saveGameToCloud: saveGameToCloud, saveNow: saveNow, logout: logout, hasLegacySave: hasLegacySave }
+  document.addEventListener('DOMContentLoaded', bindUi)
 })()

@@ -612,11 +612,15 @@ function getCurrentScene() {
   return 'cultivate'
 }
 
-// 先恢复本地缓存，再异步比较云端快照；云端失败时照常启动本地游戏。
+// 登录后才启动游戏；云端是账号存档的权威来源，本地只在云端异常时作为兜底。
 async function initializeGame() {
+  const hadAccountLogin = !!(window.CloudSaveManager && window.CloudSaveManager.isLoggedIn && window.CloudSaveManager.isLoggedIn())
   loadGame()
   if (window.CloudSaveManager) {
-    const result = await window.CloudSaveManager.loadGameFromCloud(gameData)
+    // 只有改版前尚未登录账号的本地进度才视为游客存档，避免旧账号缓存误迁移到新账号。
+    const legacySave = !hadAccountLogin && window.CloudSaveManager.hasLegacySave() ? JSON.parse(JSON.stringify(gameData)) : null
+    await window.CloudSaveManager.waitForLogin(legacySave)
+    const result = await window.CloudSaveManager.loadGameFromCloud()
     if (result && result.source === 'cloud' && result.saveData) {
       loadGame(result.saveData)
     } else if (result && result.shouldUpload) {
@@ -637,7 +641,7 @@ async function initializeGame() {
 window.getCurrentGameSave = function () { return gameData }
 window.reloadGameFromCloud = async function () {
   if (!window.CloudSaveManager) return
-  const result = await window.CloudSaveManager.loadGameFromCloud({ updateTimeMs: 0, updateTime: '' })
+  const result = await window.CloudSaveManager.loadGameFromCloud()
   if (result && result.source === 'cloud' && result.saveData) {
     loadGame(result.saveData)
     platform.setStorageSync(SAVE_KEY, gameData)
