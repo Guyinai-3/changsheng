@@ -55,14 +55,19 @@
   function getStatus () { return Object.assign({ userId: getUserId(), enabled: enabled() }, status) }
 
   function loadSdk () {
-    if (window.cloudbase || window.CloudBase) return Promise.resolve(window.cloudbase || window.CloudBase)
-    // js-sdk 2.x 发布的是 ESM 构建，不存在可直接挂到 window 的 UMD 文件。
-    // 动态 import 会让 CDN 按模块依赖继续加载，不影响其余经典脚本。
-    return import(config().sdkUrl).then(function (module) {
-      return module.default || module.cloudbase || module
-    }).catch(function () {
-      throw new Error('CloudBase SDK 加载失败')
-    })
+    if (window.cloudbase || window.CloudBase || window.tcb) return Promise.resolve(window.cloudbase || window.CloudBase || window.tcb)
+    if (config().sdkMode === 'script') {
+      return new Promise(function (resolve, reject) {
+        const script = document.createElement('script')
+        script.src = config().sdkUrl
+        script.async = true
+        script.onload = function () { resolve(window.cloudbase || window.CloudBase || window.tcb) }
+        script.onerror = function () { reject(new Error('CloudBase SDK 加载失败')) }
+        document.head.appendChild(script)
+      })
+    }
+    return import(config().sdkUrl).then(function (module) { return module.default || module.cloudbase || module })
+      .catch(function () { throw new Error('CloudBase SDK 加载失败') })
   }
 
   async function initialize () {

@@ -6,7 +6,7 @@ window.CLOUD_SAVE_CONFIG = {
   accessKey: '',
   collection: 'game_save',
   loginMode: 'anonymous',
-  // 静态 HTML 项目直接使用浏览器版 SDK，不改变游戏为服务端运行。
-  // +esm 是可直接被浏览器动态 import 的完整 ESM 构建，避免原始包内的裸模块路径无法解析。
-  sdkUrl: 'https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@2.24.0/+esm'
+  // 腾讯 CloudBase 提供的单文件浏览器 SDK；避免 ESM 依赖链过长造成首屏云同步一直连接中。
+  sdkUrl: 'https://imgcache.qq.com/qcloud/tcbjs/1.6.0/tcb.js',
+  sdkMode: 'script'
 }
