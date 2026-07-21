@@ -5,7 +5,13 @@
 const cloudbase = require('@cloudbase/node-sdk')
 const crypto = require('crypto')
 
-const app = cloudbase.init({ env: cloudbase.SYMBOL_CURRENT_ENV })
+// 云函数运行时会自动注入短期凭证；显式传给 SDK，避免前端数据库权限影响服务端读写。
+const app = cloudbase.init({
+  env: cloudbase.SYMBOL_CURRENT_ENV,
+  secretId: process.env.TENCENTCLOUD_SECRETID,
+  secretKey: process.env.TENCENTCLOUD_SECRETKEY,
+  sessionToken: process.env.TENCENTCLOUD_SESSIONTOKEN
+})
 const db = app.database()
 const USERS = 'users'
 const SAVES = 'game_save'
